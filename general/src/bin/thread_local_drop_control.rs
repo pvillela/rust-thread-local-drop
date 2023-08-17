@@ -2,6 +2,7 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     mem::replace,
+    pin::Pin,
     sync::{Mutex, OnceLock},
     thread::{self, ThreadId},
     time::Duration,
@@ -17,7 +18,7 @@ fn get_tl_drop_control() -> &'static Mutex<HashMap<ThreadId, usize>> {
 }
 
 #[derive(Debug)]
-struct Holder(HashMap<u32, Foo>);
+struct Holder(Pin<Box<HashMap<u32, Foo>>>);
 
 impl Drop for Holder {
     fn drop(&mut self) {
@@ -35,7 +36,7 @@ impl Drop for Holder {
 }
 
 thread_local! {
-    static MY_MAP: RefCell<(bool, Holder)> = RefCell::new((false, Holder(HashMap::new())));
+    static MY_MAP: RefCell<(bool, Holder)> = RefCell::new((false, Holder(Box::pin(HashMap::new()))));
 }
 
 fn ensure_tl_registered() {
@@ -45,7 +46,7 @@ fn ensure_tl_registered() {
         }
         (*r.borrow_mut()).0 = true;
         let mut control = get_tl_drop_control().lock().unwrap();
-        let x: *const HashMap<u32, Foo> = &r.borrow().1 .0;
+        let x: *const Pin<Box<HashMap<u32, Foo>>> = &r.borrow().1 .0;
         let x = x as usize;
         control.insert(thread::current().id(), x);
         println!("thread id {:?} registered", thread::current().id());
@@ -75,8 +76,13 @@ fn ensure_tls_dropped() {
     let mut control = get_tl_drop_control().lock().unwrap();
     for (tid, addr) in control.iter() {
         println!("executing `ensure_tls_dropped` tid {:?}", tid);
-        let ptr = unsafe { &mut *(*addr as *mut HashMap<u32, Foo>) };
-        _ = replace(ptr, HashMap::new());
+        // Safety: provided that:
+        // - This function is only called by a thread on which `ensure_tl_registered` has never been called
+        // - All other threads have terminaged, which means the only possible remaining activity on those threads
+        //   would be Holder drop method execution, but that method uses the above Mutex to prevent
+        //   race conditions.
+        let ptr = unsafe { &mut *(*addr as *mut Pin<Box<HashMap<u32, Foo>>>) };
+        _ = replace(ptr, Box::pin(HashMap::new()));
     }
     *control = HashMap::new();
 }
@@ -111,7 +117,7 @@ fn main() {
             let control = get_tl_drop_control().lock().unwrap();
             println!("After h1 join: control={:?}", control);
         }
-        ensure_tls_dropped();
+        ensure_tls_dropped(); // this call can be unsafe because h2 hasn't been joined yet
         let control = get_tl_drop_control().lock().unwrap();
         println!(
             "After 1st call to `ensure_tls_dropped`: control={:?}",
