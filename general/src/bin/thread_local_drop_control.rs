@@ -2,7 +2,6 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     mem::replace,
-    pin::Pin,
     sync::{Mutex, OnceLock},
     thread::{self, ThreadId},
     time::Duration,
@@ -18,7 +17,7 @@ fn get_tl_drop_control() -> &'static Mutex<HashMap<ThreadId, usize>> {
 }
 
 #[derive(Debug)]
-struct Holder(Pin<Box<HashMap<u32, Foo>>>);
+struct Holder(HashMap<u32, Foo>);
 
 impl Drop for Holder {
     fn drop(&mut self) {
@@ -36,7 +35,7 @@ impl Drop for Holder {
 }
 
 thread_local! {
-    static MY_MAP: RefCell<(bool, Holder)> = RefCell::new((false, Holder(Box::pin(HashMap::new()))));
+    static MY_MAP: RefCell<(bool, Holder)> = RefCell::new((false, Holder(HashMap::new())));
 }
 
 fn ensure_tl_registered() {
@@ -46,7 +45,7 @@ fn ensure_tl_registered() {
         }
         (*r.borrow_mut()).0 = true;
         let mut control = get_tl_drop_control().lock().unwrap();
-        let x: *const Pin<Box<HashMap<u32, Foo>>> = &r.borrow().1 .0;
+        let x: *const HashMap<u32, Foo> = &r.borrow().1 .0;
         let x = x as usize;
         control.insert(thread::current().id(), x);
         println!("thread id {:?} registered", thread::current().id());
@@ -81,8 +80,8 @@ fn ensure_tls_dropped() {
         // - All other threads have terminaged, which means the only possible remaining activity on those threads
         //   would be Holder drop method execution, but that method uses the above Mutex to prevent
         //   race conditions.
-        let ptr = unsafe { &mut *(*addr as *mut Pin<Box<HashMap<u32, Foo>>>) };
-        _ = replace(ptr, Box::pin(HashMap::new()));
+        let ptr = unsafe { &mut *(*addr as *mut HashMap<u32, Foo>) };
+        _ = replace(ptr, HashMap::new());
     }
     *control = HashMap::new();
 }
