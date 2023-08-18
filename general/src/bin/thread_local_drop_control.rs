@@ -1,3 +1,5 @@
+//! Demonstrates how to ensure destructors are run on thread-local variables after the thread terminates.
+
 use std::{
     cell::RefCell,
     collections::HashMap,
