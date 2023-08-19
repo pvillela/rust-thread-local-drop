@@ -1,4 +1,4 @@
-//! Example usage of [thread_local_drop].
+//! Example of inappropriate use of [`thread_local_drop`].
 
 use std::{cell::RefCell, collections::HashMap, fmt::Debug, thread, time::Duration};
 use thread_local_drop::{Control, Holder};
@@ -21,6 +21,13 @@ fn insert_tl_entry(k: u32, v: Foo, control: &Control<HashMap<u32, Foo>>) {
     });
 }
 
+fn dangerous_insert_tl_entry(k: u32, v: Foo) {
+    MY_FOO_MAP.with(|r| {
+        let x = &mut r.borrow_mut();
+        x.data.as_mut().unwrap().insert(k, v);
+    });
+}
+
 fn print_tl(prefix: &str) {
     MY_FOO_MAP.with(|r| {
         println!(
@@ -32,7 +39,7 @@ fn print_tl(prefix: &str) {
     });
 }
 
-fn main() {
+pub fn main() {
     let control = Control::new();
 
     thread::scope(|s| {
@@ -48,8 +55,8 @@ fn main() {
             insert_tl_entry(1, Foo("aa".to_owned()), &control);
             print_tl("Before h2 sleep");
             thread::sleep(Duration::from_millis(200));
-            insert_tl_entry(2, Foo("bb".to_owned()), &control);
-            print_tl("After h2 sleep");
+            dangerous_insert_tl_entry(2, Foo("bb".to_owned()));
+            print_tl("After `dangerous_insert_tl_entry`");
         });
 
         thread::sleep(Duration::from_millis(50));
@@ -59,14 +66,7 @@ fn main() {
         {
             _ = h1.join();
             println!("After h1 join: control={:?}", control);
-
-            // Don't do this in production code. For demonstration purposes only.
-            // Making this call before joining with `h2` is dangerous because there is a data race.
-            // However, in this particular example, it's OK because of the choice of sleep times
-            // together with the fact that `insert_tl_entry` ensures `Holder` is properly initialized
-            // before inserting a key-value pair.
-            control.ensure_tls_dropped();
-
+            control.ensure_tls_dropped(); // this call is unsafe because h2 hasn't been joined yet
             println!(
                 "After 1st call to `ensure_tls_dropped`: control={:?}",
                 control

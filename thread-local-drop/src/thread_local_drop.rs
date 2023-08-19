@@ -64,6 +64,8 @@ impl<T: 'static> Control<T> {
 
     /// Forces all registered thread-locals that have not already been dropped to be effectively dropped
     /// by replacing the [`Holder`] data with [`None`].
+    /// Should only be called after joining with all threads that have registered, to ensure proper
+    /// "happened-before" condition between any thread-local data updates and this call.
     pub fn ensure_tls_dropped(&self) {
         println!("entered `ensure_tls_dropped`");
         let mut control = self.0.lock().unwrap();
@@ -71,7 +73,8 @@ impl<T: 'static> Control<T> {
             println!("executing `ensure_tls_dropped` tid {:?}", tid);
             // Safety: provided that:
             // - This function is only called by a thread on which `ensure_tl_registered` has never been called
-            // - All other threads have terminaged, which means the only possible remaining activity on those threads
+            // - All other threads have terminaged and been joined, which means that there is a proper
+            //   "happened-before" relationship and the only possible remaining activity on those threads
             //   would be Holder drop method execution, but that method uses the above Mutex to prevent
             //   race conditions.
             let ptr = unsafe { &mut *(*addr as *mut Option<T>) };
