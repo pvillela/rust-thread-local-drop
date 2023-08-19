@@ -1,4 +1,7 @@
-//! Demonstrates how to ensure destructors are run on thread-local variables after the thread terminates.
+//! Standalone example that
+//! demonstrates how to ensure destructors are run on thread-local variables after the thread terminates,
+//! without using the [thread_local_drop] library.
+//! This example was the genesis of the library.
 
 use std::{
     cell::RefCell,

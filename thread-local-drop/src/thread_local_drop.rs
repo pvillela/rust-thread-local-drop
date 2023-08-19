@@ -1,5 +1,4 @@
-//! Generic version of `thread_local_drop_control.rs`.
-//! Demonstrates how to ensure destructors are run on thread-local variables after the thread terminates.
+//! Support for ensuring that destructors are run on thread-local variables after the thread terminates.
 
 use std::{
     cell::RefCell,
@@ -8,12 +7,11 @@ use std::{
     mem::replace,
     sync::{Arc, Mutex},
     thread::{self, LocalKey, ThreadId},
-    time::Duration,
 };
 
+/// Controls the destruction of thread-local variables registered with it.
+/// Such thread-locals must be of type `RefCell<Holder<T>>`.
 #[derive(Debug)]
-struct Foo(String);
-
 pub struct Control(Arc<Mutex<HashMap<ThreadId, usize>>>);
 
 impl Clone for Control {
@@ -23,14 +21,16 @@ impl Clone for Control {
 }
 
 impl Control {
+    /// Instantiates a new [Control].
     pub fn new() -> Self {
         Control(Arc::new(Mutex::new(HashMap::new())))
     }
 
-    pub fn ensure_tl_registered<T>(&self, tl: &'static LocalKey<RefCell<(bool, Holder<T>)>>) {
+    /// Registers a thread-local with `self` in case it is not already registered.
+    pub fn ensure_tl_registered<T>(&self, tl: &'static LocalKey<RefCell<Holder<T>>>) {
         tl.with(|r| {
             // Case already registered.
-            if r.borrow().0 {
+            if r.borrow().control.is_some() {
                 return;
             }
 
@@ -38,14 +38,13 @@ impl Control {
 
             // Update Holder.
             {
-                (*r.borrow_mut()).0 = true;
-                let holder = &mut r.borrow_mut().1;
+                let holder = &mut r.borrow_mut();
                 (*holder).control = Some(self.clone());
             }
 
             // Update self.
             {
-                let data_ptr: *const Option<T> = &r.borrow().1.data;
+                let data_ptr: *const Option<T> = &r.borrow().data;
                 let addr = data_ptr as usize;
                 let mut control = self.0.lock().unwrap();
                 control.insert(thread::current().id(), addr);
@@ -54,6 +53,8 @@ impl Control {
         });
     }
 
+    /// Forces all registered thread-locals that have not already been dropped to be effectively dropped
+    /// by replacing the [`Holder`] data with [`None`].
     pub fn ensure_tls_dropped<T>(&self) {
         println!("entered `ensure_tls_dropped`");
         let mut control = self.0.lock().unwrap();
@@ -71,12 +72,14 @@ impl Control {
     }
 }
 
+/// Holds thead-local data to enable registering with [`Control`].
 pub struct Holder<T> {
-    data: Option<T>,
+    pub data: Option<T>,
     control: Option<Control>,
 }
 
 impl<T> Holder<T> {
+    /// Instantiates an empty [`Holder`].
     pub fn new() -> Self {
         Holder {
             data: None,
@@ -97,9 +100,9 @@ impl<T> Drop for Holder<T> {
             "entered `drop` for Holder on thread {:?}",
             thread::current().id()
         );
-        if self.control.is_none() {
+        if self.data.is_none() {
             println!(
-                "exiting `drop` for Holder on thread {:?} because control is None",
+                "exiting `drop` for Holder on thread {:?} because data is None",
                 thread::current().id()
             );
             return;
@@ -121,88 +124,4 @@ impl<T> Drop for Holder<T> {
             control
         );
     }
-}
-
-thread_local! {
-    static MY_FOO_MAP: RefCell<(bool, Holder<HashMap<u32, Foo>>)> = RefCell::new((false, Holder::new()));
-}
-
-fn insert_tl_entry(k: u32, v: Foo, control: &Control) {
-    control.ensure_tl_registered(&MY_FOO_MAP);
-    MY_FOO_MAP.with(|r| {
-        let x = &mut r.borrow_mut().1;
-        if x.data.is_none() {
-            (*x).data = Some(HashMap::new());
-        }
-        x.data.as_mut().unwrap().insert(k, v);
-    });
-}
-
-fn print_tl() {
-    MY_FOO_MAP.with(|r| {
-        println!(
-            "local map for thread id={:?}: {:?}",
-            thread::current().id(),
-            r
-        );
-    });
-}
-
-// fn main() {}
-
-fn main() {
-    let control = Control::new();
-
-    thread::scope(|s| {
-        let h1 = s.spawn(|| {
-            insert_tl_entry(1, Foo("a".to_owned()), &control);
-            insert_tl_entry(2, Foo("b".to_owned()), &control);
-            print_tl();
-            thread::sleep(Duration::from_millis(100));
-            print_tl();
-        });
-
-        let h2 = s.spawn(|| {
-            insert_tl_entry(1, Foo("aa".to_owned()), &control);
-            insert_tl_entry(2, Foo("bb".to_owned()), &control);
-            print_tl();
-            thread::sleep(Duration::from_millis(200));
-            print_tl();
-        });
-
-        thread::sleep(Duration::from_millis(50));
-
-        {
-            let control = control.0.lock().unwrap();
-            println!("Before h1 join: control={:?}", control);
-        }
-
-        {
-            _ = h1.join();
-            {
-                let control = control.0.lock().unwrap();
-                println!("After h1 join: control={:?}", control);
-            }
-            control.ensure_tls_dropped::<HashMap<u32, Foo>>(); // this call can be unsafe because h2 hasn't been joined yet
-            let control = control.0.lock().unwrap();
-            println!(
-                "After 1st call to `ensure_tls_dropped`: control={:?}",
-                control
-            );
-        }
-
-        {
-            _ = h2.join();
-            {
-                let control = control.0.lock().unwrap();
-                println!("After h2 join: control={:?}", control);
-            }
-            control.ensure_tls_dropped::<HashMap<u32, Foo>>();
-            let control = control.0.lock().unwrap();
-            println!(
-                "After 2nd call to `ensure_tls_dropped`: control={:?}",
-                control
-            );
-        }
-    });
 }
