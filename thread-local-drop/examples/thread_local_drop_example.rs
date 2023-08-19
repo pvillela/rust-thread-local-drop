@@ -10,7 +10,7 @@ thread_local! {
     static MY_FOO_MAP: RefCell<Holder<HashMap<u32, Foo>>> = RefCell::new(Holder::new());
 }
 
-fn insert_tl_entry(k: u32, v: Foo, control: &Control) {
+fn insert_tl_entry(k: u32, v: Foo, control: &Control<HashMap<u32, Foo>>) {
     control.ensure_tl_registered(&MY_FOO_MAP);
     MY_FOO_MAP.with(|r| {
         let x = &mut r.borrow_mut();
@@ -46,9 +46,9 @@ fn main() {
 
         let h2 = s.spawn(|| {
             insert_tl_entry(1, Foo("aa".to_owned()), &control);
-            insert_tl_entry(2, Foo("bb".to_owned()), &control);
             print_tl("Before h2 sleep");
             thread::sleep(Duration::from_millis(200));
+            insert_tl_entry(2, Foo("bb".to_owned()), &control);
             print_tl("After h2 sleep");
         });
 
@@ -59,7 +59,14 @@ fn main() {
         {
             _ = h1.join();
             println!("After h1 join: control={:?}", control);
-            control.ensure_tls_dropped::<HashMap<u32, Foo>>(); // this call can be unsafe because h2 hasn't been joined yet
+
+            // Don't do this in production code. For demonstration purposes only.
+            // Making this call before joining with `h2` is dangerous because there is a data race.
+            // However, in this particular example, it is OK because of the choice of sleep times
+            // together with the fact that `insert_tl_entry` ensures `Holder` is properly initialized
+            // before inserting a key-value pair.
+            control.ensure_tls_dropped();
+
             println!(
                 "After 1st call to `ensure_tls_dropped`: control={:?}",
                 control
@@ -69,7 +76,7 @@ fn main() {
         {
             _ = h2.join();
             println!("After h2 join: control={:?}", control);
-            control.ensure_tls_dropped::<HashMap<u32, Foo>>();
+            control.ensure_tls_dropped();
             println!(
                 "After 2nd call to `ensure_tls_dropped`: control={:?}",
                 control

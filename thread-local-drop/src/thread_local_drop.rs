@@ -4,6 +4,7 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     fmt::Debug,
+    marker::PhantomData,
     mem::replace,
     sync::{Arc, Mutex},
     thread::{self, LocalKey, ThreadId},
@@ -11,23 +12,31 @@ use std::{
 
 /// Controls the destruction of thread-local variables registered with it.
 /// Such thread-locals must be of type `RefCell<Holder<T>>`.
-#[derive(Debug)]
-pub struct Control(Arc<Mutex<HashMap<ThreadId, usize>>>);
+pub struct Control<T: 'static>(
+    Arc<Mutex<HashMap<ThreadId, usize>>>,
+    PhantomData<LocalKey<RefCell<Holder<T>>>>,
+);
 
-impl Clone for Control {
-    fn clone(&self) -> Self {
-        Control(self.0.clone())
+impl<T: 'static> Debug for Control<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&format!("Control({:?})", self.0))
     }
 }
 
-impl Control {
+impl<T> Clone for Control<T> {
+    fn clone(&self) -> Self {
+        Control(self.0.clone(), self.1.clone())
+    }
+}
+
+impl<T: 'static> Control<T> {
     /// Instantiates a new [Control].
     pub fn new() -> Self {
-        Control(Arc::new(Mutex::new(HashMap::new())))
+        Control(Arc::new(Mutex::new(HashMap::new())), PhantomData)
     }
 
     /// Registers a thread-local with `self` in case it is not already registered.
-    pub fn ensure_tl_registered<T>(&self, tl: &'static LocalKey<RefCell<Holder<T>>>) {
+    pub fn ensure_tl_registered(&self, tl: &'static LocalKey<RefCell<Holder<T>>>) {
         tl.with(|r| {
             // Case already registered.
             if r.borrow().control.is_some() {
@@ -55,7 +64,7 @@ impl Control {
 
     /// Forces all registered thread-locals that have not already been dropped to be effectively dropped
     /// by replacing the [`Holder`] data with [`None`].
-    pub fn ensure_tls_dropped<T>(&self) {
+    pub fn ensure_tls_dropped(&self) {
         println!("entered `ensure_tls_dropped`");
         let mut control = self.0.lock().unwrap();
         for (tid, addr) in control.iter() {
@@ -73,9 +82,9 @@ impl Control {
 }
 
 /// Holds thead-local data to enable registering with [`Control`].
-pub struct Holder<T> {
+pub struct Holder<T: 'static> {
     pub data: Option<T>,
-    control: Option<Control>,
+    control: Option<Control<T>>,
 }
 
 impl<T> Holder<T> {
