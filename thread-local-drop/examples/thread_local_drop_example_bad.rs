@@ -40,7 +40,7 @@ fn print_tl(prefix: &str) {
 }
 
 pub fn main() {
-    let control = Control::new();
+    let control = Control::new(|_| ());
 
     thread::scope(|s| {
         let h1 = s.spawn(|| {

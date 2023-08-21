@@ -33,7 +33,13 @@ fn print_tl(prefix: &str) {
 }
 
 fn main() {
-    let control = Control::new();
+    let control = Control::new(|data| {
+        println!(
+            "`accept` called on {:?} with data {:?}",
+            thread::current().id(),
+            data
+        );
+    });
 
     thread::scope(|s| {
         let h1 = s.spawn(|| {

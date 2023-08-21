@@ -4,7 +4,6 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     fmt::Debug,
-    marker::PhantomData,
     mem::replace,
     sync::{Arc, Mutex},
     thread::{self, LocalKey, ThreadId},
@@ -12,9 +11,9 @@ use std::{
 
 /// Controls the destruction of thread-local variables registered with it.
 /// Such thread-locals must be of type `RefCell<Holder<T>>`.
-pub struct Control<T: 'static>(
+pub struct Control<T>(
     Arc<Mutex<HashMap<ThreadId, usize>>>,
-    PhantomData<LocalKey<RefCell<Holder<T>>>>,
+    Arc<dyn Fn(&Option<T>) + Send + Sync>,
 );
 
 impl<T: 'static> Debug for Control<T> {
@@ -29,10 +28,10 @@ impl<T> Clone for Control<T> {
     }
 }
 
-impl<T: 'static> Control<T> {
+impl<T> Control<T> {
     /// Instantiates a new [Control].
-    pub fn new() -> Self {
-        Control(Arc::new(Mutex::new(HashMap::new())), PhantomData)
+    pub fn new(accept: impl Fn(&Option<T>) + 'static + Send + Sync) -> Self {
+        Control(Arc::new(Mutex::new(HashMap::new())), Arc::new(accept))
     }
 
     /// Registers a thread-local with `self` in case it is not already registered.
@@ -78,7 +77,8 @@ impl<T: 'static> Control<T> {
             //   would be Holder drop method execution, but that method uses the above Mutex to prevent
             //   race conditions.
             let ptr = unsafe { &mut *(*addr as *mut Option<T>) };
-            _ = replace(ptr, None);
+            let data = replace(ptr, None);
+            self.1(&data);
         }
         *control = HashMap::new();
     }
@@ -123,17 +123,20 @@ impl<T> Drop for Holder<T> {
             "`drop` acquiring control lock on thread {:?}",
             thread::current().id()
         );
-        let mut control = self.control.as_ref().unwrap().0.lock().unwrap();
+        let mut control = self.control.as_ref().unwrap();
         println!(
             "`drop` acquired control lock on thread {:?}",
             thread::current().id()
         );
-        let entry = control.remove_entry(&thread::current().id());
+        let mut map = control.0.lock().unwrap();
+        let entry = map.remove_entry(&thread::current().id());
         println!(
             "`drop` removed entry {:?} for thread {:?}, control={:?}",
             entry,
             thread::current().id(),
-            control
+            map
         );
+        let accept = &control.1;
+        accept(&self.data);
     }
 }
