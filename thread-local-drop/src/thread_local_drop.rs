@@ -1,4 +1,5 @@
-//! Support for ensuring that destructors are run on thread-local variables after the thread terminates.
+//! Support for ensuring that destructors are run on thread-local variables after the threads terminate,
+//! as well as support for accumulating the thread-local values using a binary operation.
 
 use log;
 use std::{
@@ -12,18 +13,22 @@ use std::{
 };
 
 #[derive(Debug)]
-pub struct Accumulated<U> {
-    map: HashMap<ThreadId, usize>,
+pub struct Accumulator<U> {
+    /// Thread control map.
+    tmap: HashMap<ThreadId, usize>,
+    /// Accumulated value.
     pub acc: U,
 }
 
-type InnerControl<U> = Accumulated<U>;
+type InnerControl<U> = Accumulator<U>;
 
 /// Controls the destruction of thread-local variables registered with it.
 /// Such thread-locals must be of type `RefCell<Holder<T>>`.
 pub struct Control<T, U> {
+    /// Keeps track of registered threads and accumulated value.
     inner: Arc<Mutex<InnerControl<U>>>,
-    op: Arc<dyn Fn(&T, &U, &ThreadId) -> U + Send + Sync>,
+    /// Binary operation that combines data from thread-locals with accumulated value.
+    op: Arc<dyn Fn(&T, &mut U, &ThreadId) + Send + Sync>,
 }
 
 impl<T, U> Clone for Control<T, U> {
@@ -43,10 +48,15 @@ impl<T, U: Debug> Debug for Control<T, U> {
 
 impl<T, U> Control<T, U> {
     /// Instantiates a new [Control].
-    pub fn new(acc_base: U, op: impl Fn(&T, &U, &ThreadId) -> U + 'static + Send + Sync) -> Self {
+    ///
+    /// # Arguments
+    /// * `acc_base` - Initial value of accumulator that will be combined with thread-local values
+    /// using `op`.
+    /// * `op` - Binary operation used to combine thread-local values with accumulated value.
+    pub fn new(acc_base: U, op: impl Fn(&T, &mut U, &ThreadId) + 'static + Send + Sync) -> Self {
         Control {
             inner: Arc::new(Mutex::new(InnerControl {
-                map: HashMap::new(),
+                tmap: HashMap::new(),
                 acc: acc_base,
             })),
             op: Arc::new(op),
@@ -74,7 +84,7 @@ impl<T, U> Control<T, U> {
                 let data_ptr: *const Option<T> = &r.borrow().data;
                 let addr = data_ptr as usize;
                 let mut control = self.inner.lock().unwrap();
-                control.map.insert(thread::current().id(), addr);
+                control.tmap.insert(thread::current().id(), addr);
                 log::trace!("thread id {:?} registered", thread::current().id());
             }
         });
@@ -89,7 +99,7 @@ impl<T, U> Control<T, U> {
         let mut control = self.inner.lock().unwrap();
         let inner = control.deref_mut();
         let acc = &mut inner.acc;
-        let map = &mut inner.map;
+        let map = &mut inner.tmap;
         for (tid, addr) in map.iter() {
             log::trace!("executing `ensure_tls_dropped` tid {:?}", tid);
             // Safety: provided that:
@@ -101,15 +111,19 @@ impl<T, U> Control<T, U> {
             let ptr = unsafe { &mut *(*addr as *mut Option<T>) };
             let data = replace(ptr, None);
             if let Some(data) = data {
-                *acc = (&self.op)(&data, acc, tid);
+                (&self.op)(&data, acc, tid);
             }
         }
         *map = HashMap::new();
     }
 
-    pub fn accumulated(
+    /// Provides access to the value accumulated from thread-locals (see `new`).
+    /// The result should always be [Ok] when this method is called after `ensure_tls_dropped`.
+    /// However, calling this before all thread-locals have been dropped may result in lock
+    /// contention with a [TryLockError] result.
+    pub fn accumulator(
         &self,
-    ) -> Result<MutexGuard<Accumulated<U>>, TryLockError<MutexGuard<Accumulated<U>>>> {
+    ) -> Result<MutexGuard<Accumulator<U>>, TryLockError<MutexGuard<Accumulator<U>>>> {
         match self.inner.try_lock() {
             Ok(guard) => Ok(guard),
             err @ _ => err,
@@ -154,7 +168,7 @@ impl<T, U> Drop for Holder<T, U> {
         let control = self.control.as_ref().unwrap();
         log::trace!("`drop` acquired control lock on thread {:?}", tid);
         let mut inner = control.inner.lock().unwrap();
-        let map = &mut inner.map;
+        let map = &mut inner.tmap;
         let entry = map.remove_entry(&tid);
         log::trace!(
             "`drop` removed entry {:?} for thread {:?}, control={:?}",
@@ -164,7 +178,7 @@ impl<T, U> Drop for Holder<T, U> {
         );
         let op = &control.op;
         if let Some(data) = &self.data {
-            (*inner).acc = op(data, &inner.acc, &tid);
+            op(data, &mut inner.acc, &tid);
         }
     }
 }
