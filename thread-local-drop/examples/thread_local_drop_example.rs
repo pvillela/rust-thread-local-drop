@@ -1,6 +1,12 @@
 //! Example usage of [thread_local_drop].
 
-use std::{cell::RefCell, collections::HashMap, fmt::Debug, thread, time::Duration};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    fmt::Debug,
+    thread::{self, ThreadId},
+    time::Duration,
+};
 use thread_local_drop::{Control, Holder};
 
 #[derive(Debug)]
@@ -30,6 +36,14 @@ fn print_tl(prefix: &str) {
             r
         );
     });
+}
+
+fn op(data: &HashMap<u32, Foo>, acc: &mut HashMap<ThreadId, HashMap<u32, Foo>>, tid: ThreadId) {
+    println!(
+        "`op` called from {:?} with data {:?}",
+        thread::current().id(),
+        data
+    );
 }
 
 fn main() {

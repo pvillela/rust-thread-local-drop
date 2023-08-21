@@ -1,20 +1,23 @@
 //! Support for ensuring that destructors are run on thread-local variables after the thread terminates.
 
+use log;
 use std::{
     cell::RefCell,
     collections::HashMap,
     fmt::Debug,
     mem::replace,
     ops::DerefMut,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard, TryLockError},
     thread::{self, LocalKey, ThreadId},
 };
 
 #[derive(Debug)]
-struct InnerControl<U> {
+pub struct Accumulated<U> {
     map: HashMap<ThreadId, usize>,
-    acc: U,
+    pub acc: U,
 }
+
+type InnerControl<U> = Accumulated<U>;
 
 /// Controls the destruction of thread-local variables registered with it.
 /// Such thread-locals must be of type `RefCell<Holder<T>>`.
@@ -72,7 +75,7 @@ impl<T, U> Control<T, U> {
                 let addr = data_ptr as usize;
                 let mut control = self.inner.lock().unwrap();
                 control.map.insert(thread::current().id(), addr);
-                println!("thread id {:?} registered", thread::current().id());
+                log::trace!("thread id {:?} registered", thread::current().id());
             }
         });
     }
@@ -82,13 +85,13 @@ impl<T, U> Control<T, U> {
     /// Should only be called after joining with all threads that have registered, to ensure proper
     /// "happened-before" condition between any thread-local data updates and this call.
     pub fn ensure_tls_dropped(&self) {
-        println!("entered `ensure_tls_dropped`");
+        log::trace!("entered `ensure_tls_dropped`");
         let mut control = self.inner.lock().unwrap();
         let inner = control.deref_mut();
         let acc = &mut inner.acc;
         let map = &mut inner.map;
         for (tid, addr) in map.iter() {
-            println!("executing `ensure_tls_dropped` tid {:?}", tid);
+            log::trace!("executing `ensure_tls_dropped` tid {:?}", tid);
             // Safety: provided that:
             // - This function is only called by a thread on which `ensure_tl_registered` has never been called
             // - All other threads have terminaged and been joined, which means that there is a proper
@@ -102,6 +105,15 @@ impl<T, U> Control<T, U> {
             }
         }
         *map = HashMap::new();
+    }
+
+    pub fn accumulated(
+        &self,
+    ) -> Result<MutexGuard<Accumulated<U>>, TryLockError<MutexGuard<Accumulated<U>>>> {
+        match self.inner.try_lock() {
+            Ok(guard) => Ok(guard),
+            err @ _ => err,
+        }
     }
 }
 
@@ -130,21 +142,21 @@ impl<T: Debug, U> Debug for Holder<T, U> {
 impl<T, U> Drop for Holder<T, U> {
     fn drop(&mut self) {
         let tid = thread::current().id();
-        println!("entered `drop` for Holder on thread {:?}", tid);
+        log::trace!("entered `drop` for Holder on thread {:?}", tid);
         if self.data.is_none() {
-            println!(
+            log::trace!(
                 "exiting `drop` for Holder on thread {:?} because data is None",
                 tid
             );
             return;
         }
-        println!("`drop` acquiring control lock on thread {:?}", tid);
+        log::trace!("`drop` acquiring control lock on thread {:?}", tid);
         let control = self.control.as_ref().unwrap();
-        println!("`drop` acquired control lock on thread {:?}", tid);
+        log::trace!("`drop` acquired control lock on thread {:?}", tid);
         let mut inner = control.inner.lock().unwrap();
         let map = &mut inner.map;
         let entry = map.remove_entry(&tid);
-        println!(
+        log::trace!(
             "`drop` removed entry {:?} for thread {:?}, control={:?}",
             entry,
             thread::current().id(),
