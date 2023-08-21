@@ -5,37 +5,53 @@ use std::{
     collections::HashMap,
     fmt::Debug,
     mem::replace,
+    ops::DerefMut,
     sync::{Arc, Mutex},
     thread::{self, LocalKey, ThreadId},
 };
 
+#[derive(Debug)]
+struct InnerControl<U> {
+    map: HashMap<ThreadId, usize>,
+    acc: U,
+}
+
 /// Controls the destruction of thread-local variables registered with it.
 /// Such thread-locals must be of type `RefCell<Holder<T>>`.
-pub struct Control<T>(
-    Arc<Mutex<HashMap<ThreadId, usize>>>,
-    Arc<dyn Fn(&Option<T>) + Send + Sync>,
-);
-
-impl<T: 'static> Debug for Control<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&format!("Control({:?})", self.0))
-    }
+pub struct Control<T, U> {
+    inner: Arc<Mutex<InnerControl<U>>>,
+    op: Arc<dyn Fn(&T, &U, &ThreadId) -> U + Send + Sync>,
 }
 
-impl<T> Clone for Control<T> {
+impl<T, U> Clone for Control<T, U> {
     fn clone(&self) -> Self {
-        Control(self.0.clone(), self.1.clone())
+        Control {
+            inner: self.inner.clone(),
+            op: self.op.clone(),
+        }
     }
 }
 
-impl<T> Control<T> {
+impl<T, U: Debug> Debug for Control<T, U> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&format!("Control({:?})", self.inner))
+    }
+}
+
+impl<T, U> Control<T, U> {
     /// Instantiates a new [Control].
-    pub fn new(accept: impl Fn(&Option<T>) + 'static + Send + Sync) -> Self {
-        Control(Arc::new(Mutex::new(HashMap::new())), Arc::new(accept))
+    pub fn new(acc_base: U, op: impl Fn(&T, &U, &ThreadId) -> U + 'static + Send + Sync) -> Self {
+        Control {
+            inner: Arc::new(Mutex::new(InnerControl {
+                map: HashMap::new(),
+                acc: acc_base,
+            })),
+            op: Arc::new(op),
+        }
     }
 
     /// Registers a thread-local with `self` in case it is not already registered.
-    pub fn ensure_tl_registered(&self, tl: &'static LocalKey<RefCell<Holder<T>>>) {
+    pub fn ensure_tl_registered(&self, tl: &'static LocalKey<RefCell<Holder<T, U>>>) {
         tl.with(|r| {
             // Case already registered.
             if r.borrow().control.is_some() {
@@ -54,8 +70,8 @@ impl<T> Control<T> {
             {
                 let data_ptr: *const Option<T> = &r.borrow().data;
                 let addr = data_ptr as usize;
-                let mut control = self.0.lock().unwrap();
-                control.insert(thread::current().id(), addr);
+                let mut control = self.inner.lock().unwrap();
+                control.map.insert(thread::current().id(), addr);
                 println!("thread id {:?} registered", thread::current().id());
             }
         });
@@ -67,8 +83,11 @@ impl<T> Control<T> {
     /// "happened-before" condition between any thread-local data updates and this call.
     pub fn ensure_tls_dropped(&self) {
         println!("entered `ensure_tls_dropped`");
-        let mut control = self.0.lock().unwrap();
-        for (tid, addr) in control.iter() {
+        let mut control = self.inner.lock().unwrap();
+        let inner = control.deref_mut();
+        let acc = &mut inner.acc;
+        let map = &mut inner.map;
+        for (tid, addr) in map.iter() {
             println!("executing `ensure_tls_dropped` tid {:?}", tid);
             // Safety: provided that:
             // - This function is only called by a thread on which `ensure_tl_registered` has never been called
@@ -78,19 +97,21 @@ impl<T> Control<T> {
             //   race conditions.
             let ptr = unsafe { &mut *(*addr as *mut Option<T>) };
             let data = replace(ptr, None);
-            self.1(&data);
+            if let Some(data) = data {
+                *acc = (&self.op)(&data, acc, tid);
+            }
         }
-        *control = HashMap::new();
+        *map = HashMap::new();
     }
 }
 
 /// Holds thead-local data to enable registering with [`Control`].
-pub struct Holder<T: 'static> {
+pub struct Holder<T, U> {
     pub data: Option<T>,
-    control: Option<Control<T>>,
+    control: Option<Control<T, U>>,
 }
 
-impl<T> Holder<T> {
+impl<T, U> Holder<T, U> {
     /// Instantiates an empty [`Holder`].
     pub fn new() -> Self {
         Holder {
@@ -100,43 +121,38 @@ impl<T> Holder<T> {
     }
 }
 
-impl<T: Debug> Debug for Holder<T> {
+impl<T: Debug, U> Debug for Holder<T, U> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&format!("Holder{{data: {:?}}}", self.data))
     }
 }
 
-impl<T> Drop for Holder<T> {
+impl<T, U> Drop for Holder<T, U> {
     fn drop(&mut self) {
-        println!(
-            "entered `drop` for Holder on thread {:?}",
-            thread::current().id()
-        );
+        let tid = thread::current().id();
+        println!("entered `drop` for Holder on thread {:?}", tid);
         if self.data.is_none() {
             println!(
                 "exiting `drop` for Holder on thread {:?} because data is None",
-                thread::current().id()
+                tid
             );
             return;
         }
-        println!(
-            "`drop` acquiring control lock on thread {:?}",
-            thread::current().id()
-        );
-        let mut control = self.control.as_ref().unwrap();
-        println!(
-            "`drop` acquired control lock on thread {:?}",
-            thread::current().id()
-        );
-        let mut map = control.0.lock().unwrap();
-        let entry = map.remove_entry(&thread::current().id());
+        println!("`drop` acquiring control lock on thread {:?}", tid);
+        let control = self.control.as_ref().unwrap();
+        println!("`drop` acquired control lock on thread {:?}", tid);
+        let mut inner = control.inner.lock().unwrap();
+        let map = &mut inner.map;
+        let entry = map.remove_entry(&tid);
         println!(
             "`drop` removed entry {:?} for thread {:?}, control={:?}",
             entry,
             thread::current().id(),
             map
         );
-        let accept = &control.1;
-        accept(&self.data);
+        let op = &control.op;
+        if let Some(data) = &self.data {
+            (*inner).acc = op(data, &inner.acc, &tid);
+        }
     }
 }

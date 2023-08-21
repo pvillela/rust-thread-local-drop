@@ -7,10 +7,10 @@ use thread_local_drop::{Control, Holder};
 struct Foo(String);
 
 thread_local! {
-    static MY_FOO_MAP: RefCell<Holder<HashMap<u32, Foo>>> = RefCell::new(Holder::new());
+    static MY_FOO_MAP: RefCell<Holder<HashMap<u32, Foo>, ()>> = RefCell::new(Holder::new());
 }
 
-fn insert_tl_entry(k: u32, v: Foo, control: &Control<HashMap<u32, Foo>>) {
+fn insert_tl_entry(k: u32, v: Foo, control: &Control<HashMap<u32, Foo>, ()>) {
     control.ensure_tl_registered(&MY_FOO_MAP);
     MY_FOO_MAP.with(|r| {
         let x = &mut r.borrow_mut();
@@ -40,7 +40,13 @@ fn print_tl(prefix: &str) {
 }
 
 pub fn main() {
-    let control = Control::new(|_| ());
+    let control = Control::new((), |data, _, _| {
+        println!(
+            "`op` called from {:?} with data {:?}",
+            thread::current().id(),
+            data
+        );
+    });
 
     thread::scope(|s| {
         let h1 = s.spawn(|| {
