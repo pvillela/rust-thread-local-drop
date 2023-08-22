@@ -182,3 +182,161 @@ impl<T, U> Drop for Holder<T, U> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::{
+        cell::RefCell,
+        collections::HashMap,
+        fmt::Debug,
+        sync::RwLock,
+        thread::{self, ThreadId},
+        time::Duration,
+    };
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct Foo(String);
+
+    type Data = HashMap<u32, Foo>;
+
+    type AccumulatorMap = HashMap<ThreadId, HashMap<u32, Foo>>;
+
+    thread_local! {
+        static MY_FOO_MAP: RefCell<Holder<Data, AccumulatorMap>> = RefCell::new(Holder::new());
+    }
+
+    fn insert_tl_entry(k: u32, v: Foo, control: &Control<Data, AccumulatorMap>) {
+        control.ensure_tl_registered(&MY_FOO_MAP);
+        MY_FOO_MAP.with(|r| {
+            let x = &mut r.borrow_mut();
+            if x.data.is_none() {
+                (*x).data = Some(HashMap::new());
+            }
+            x.data.as_mut().unwrap().insert(k, v);
+        });
+    }
+
+    fn op(data: &HashMap<u32, Foo>, acc: &mut AccumulatorMap, tid: &ThreadId) {
+        println!(
+            "`op` called from {:?} with data {:?}",
+            thread::current().id(),
+            data
+        );
+
+        acc.entry(tid.clone()).or_insert_with(|| HashMap::new());
+        for (k, v) in data {
+            acc.get_mut(tid).unwrap().insert(*k, v.clone());
+        }
+    }
+
+    fn assert_tl(other: &Data, msg: &str) {
+        MY_FOO_MAP.with(|r| {
+            let map = r.borrow();
+            let map = map.data.as_ref().unwrap();
+            assert!(map.eq(other), "{}", msg);
+        });
+    }
+
+    fn assert_control_map(control: &Control<Data, AccumulatorMap>, keys: &[ThreadId], msg: &str) {
+        let inner = control.inner.lock().unwrap();
+        let map = &inner.tmap;
+        assert_eq!(map.len(), keys.len(), "{}", msg);
+        for k in keys {
+            assert!(map.contains_key(k), "{}", msg);
+        }
+    }
+
+    #[test]
+    fn test_all() {
+        let control = Control::new(HashMap::new(), op);
+
+        let h1_tid = RwLock::new(thread::current().id());
+        let h2_tid = RwLock::new(thread::current().id());
+
+        thread::scope(|s| {
+            let h1 = s.spawn(|| {
+                let mut lock = h1_tid.try_write().unwrap();
+                *lock = thread::current().id();
+                drop(lock);
+
+                insert_tl_entry(1, Foo("a".to_owned()), &control);
+                insert_tl_entry(2, Foo("b".to_owned()), &control);
+
+                let other = HashMap::from([(1, Foo("a".to_owned())), (2, Foo("b".to_owned()))]);
+                assert_tl(&other, "Before h1 sleep");
+
+                thread::sleep(Duration::from_millis(100));
+
+                assert_tl(&other, "After h1 sleep");
+            });
+
+            let h2 = s.spawn(|| {
+                let mut lock = h2_tid.try_write().unwrap();
+                *lock = thread::current().id();
+                drop(lock);
+
+                insert_tl_entry(1, Foo("aa".to_owned()), &control);
+
+                let other = HashMap::from([(1, Foo("aa".to_owned()))]);
+                assert_tl(&other, "Before h2 sleep");
+
+                thread::sleep(Duration::from_millis(200));
+
+                insert_tl_entry(2, Foo("bb".to_owned()), &control);
+
+                let other = HashMap::from([(2, Foo("bb".to_owned()))]);
+                assert_tl(&other, "After h2 sleep");
+            });
+
+            {
+                thread::sleep(Duration::from_millis(50));
+
+                let h1_tid = h1_tid.try_read().unwrap();
+                let h2_tid = h2_tid.try_read().unwrap();
+                let keys = [h1_tid.clone(), h2_tid.clone()];
+                assert_control_map(&control, &keys, "Before h1 join");
+            }
+
+            {
+                _ = h1.join();
+                let h2_tid = h2_tid.try_read().unwrap();
+                let keys = [h2_tid.clone()];
+                assert_control_map(&control, &keys, "After h1 join");
+
+                // Don't do this in production code. For demonstration purposes only.
+                // Making this call before joining with `h2` is dangerous because there is a data race.
+                // However, in this particular example, it's OK because of the choice of sleep times
+                // together with the fact that `insert_tl_entry` ensures `Holder` is properly initialized
+                // before inserting a key-value pair.
+                control.ensure_tls_dropped();
+
+                let keys = [];
+                assert_control_map(&control, &keys, "After 1st call to `ensure_tls_dropped`");
+            }
+
+            {
+                _ = h2.join();
+                let keys = [];
+                assert_control_map(&control, &keys, "After h2 join");
+                control.ensure_tls_dropped();
+                let keys = [];
+                assert_control_map(&control, &keys, "After 2nd call to `ensure_tls_dropped`");
+            }
+        });
+
+        {
+            let h1_tid = h1_tid.try_read().unwrap();
+            let h2_tid = h2_tid.try_read().unwrap();
+
+            let map1 = HashMap::from([(1, Foo("a".to_owned())), (2, Foo("b".to_owned()))]);
+            let map2 = HashMap::from([(1, Foo("aa".to_owned())), (2, Foo("bb".to_owned()))]);
+            let map = HashMap::from([(h1_tid.clone(), map1), (h2_tid.clone(), map2)]);
+
+            let acc = &control.accumulator().unwrap().acc;
+
+            assert!(acc.eq(&map), "Accumulator check");
+        }
+    }
+}
