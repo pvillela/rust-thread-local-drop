@@ -24,6 +24,9 @@ type InnerControl<U> = Accumulator<U>;
 
 /// Controls the destruction of thread-local variables registered with it.
 /// Such thread-locals must be of type `RefCell<Holder<T>>`.
+/// `U` is the type of the accumulated value resulting from an initial base value and
+/// the application of a binary operation to each thread-local value and the current accumulated
+/// value upon termination of each thread. (See `new` method.)
 pub struct Control<T, U> {
     /// Keeps track of registered threads and accumulated value.
     inner: Arc<Mutex<InnerControl<U>>>,
@@ -64,7 +67,7 @@ impl<T, U> Control<T, U> {
     }
 
     /// Registers a thread-local with `self` in case it is not already registered.
-    pub fn ensure_tl_registered(&self, tl: &'static LocalKey<Holder<T, U>>) {
+    fn ensure_tl_registered(&self, tl: &'static LocalKey<Holder<T, U>>) {
         tl.with(|r| {
             // Case already registered.
             if r.control.borrow().is_some() {
@@ -129,6 +132,28 @@ impl<T, U> Control<T, U> {
             err @ _ => err,
         }
     }
+
+    /// Provides immutable access to the data in the `Holder` in argument `tl`;
+    pub fn with<V>(&self, tl: &'static LocalKey<Holder<T, U>>, f: impl FnOnce(&T) -> V) -> V {
+        self.ensure_tl_registered(tl);
+        tl.with(|h| {
+            let data = h.borrow_data();
+            f(&data)
+        })
+    }
+
+    /// Provides mutable access to the data in the `Holder` in argument `tl`;
+    pub fn with_mut<V>(
+        &self,
+        tl: &'static LocalKey<Holder<T, U>>,
+        f: impl FnOnce(&mut T) -> V,
+    ) -> V {
+        self.ensure_tl_registered(tl);
+        tl.with(|h| {
+            let mut data = h.borrow_data_mut();
+            f(&mut data)
+        })
+    }
 }
 
 /// Holds thead-local data to enable registering it with [`Control`].
@@ -152,7 +177,7 @@ impl<T, U> Holder<T, U> {
 
     /// Immutably borrows the held data.
     /// If the data is not yet initialized, the function `data_init` passed to `new` is called to initialize the data.
-    pub fn borrow_data(&self) -> Ref<'_, T> {
+    fn borrow_data(&self) -> Ref<'_, T> {
         let data = self.data.borrow();
         if data.is_none() {
             let mut data = self.data.borrow_mut();
@@ -163,7 +188,7 @@ impl<T, U> Holder<T, U> {
 
     /// Mutably borrows the held data.
     /// If the data is not yet initialized, the function `data_init` passed to `new` is called to initialize the data.
-    pub fn borrow_data_mut(&self) -> RefMut<'_, T> {
+    fn borrow_data_mut(&self) -> RefMut<'_, T> {
         let mut data = self.data.borrow_mut();
         if data.is_none() {
             *data = Some((self.data_init)())
@@ -233,9 +258,7 @@ mod tests {
     }
 
     fn insert_tl_entry(k: u32, v: Foo, control: &Control<Data, AccumulatorMap>) {
-        control.ensure_tl_registered(&MY_FOO_MAP);
-        MY_FOO_MAP.with(|r| {
-            let data = &mut r.borrow_data_mut();
+        control.with_mut(&MY_FOO_MAP, |data| {
             data.insert(k, v);
         });
     }
