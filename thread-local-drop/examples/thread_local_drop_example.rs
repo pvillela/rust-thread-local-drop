@@ -1,7 +1,6 @@
 //! Example usage of [thread_local_drop].
 
 use std::{
-    cell::RefCell,
     collections::HashMap,
     fmt::Debug,
     thread::{self, ThreadId},
@@ -12,20 +11,19 @@ use thread_local_drop::{Control, Holder};
 #[derive(Debug, Clone)]
 struct Foo(String);
 
+type Data = HashMap<u32, Foo>;
+
 type AccumulatorMap = HashMap<ThreadId, HashMap<u32, Foo>>;
 
 thread_local! {
-    static MY_FOO_MAP: RefCell<Holder<HashMap<u32, Foo>, AccumulatorMap>> = RefCell::new(Holder::new());
+    static MY_FOO_MAP: Holder<Data, AccumulatorMap> = Holder::new(HashMap::new);
 }
 
-fn insert_tl_entry(k: u32, v: Foo, control: &Control<HashMap<u32, Foo>, AccumulatorMap>) {
+fn insert_tl_entry(k: u32, v: Foo, control: &Control<Data, AccumulatorMap>) {
     control.ensure_tl_registered(&MY_FOO_MAP);
     MY_FOO_MAP.with(|r| {
-        let x = &mut r.borrow_mut();
-        if x.data.is_none() {
-            (*x).data = Some(HashMap::new());
-        }
-        x.data.as_mut().unwrap().insert(k, v);
+        let data = &mut r.borrow_mut();
+        data.insert(k, v);
     });
 }
 
@@ -84,7 +82,7 @@ fn main() {
             // Don't do this in production code. For demonstration purposes only.
             // Making this call before joining with `h2` is dangerous because there is a data race.
             // However, in this particular example, it's OK because of the choice of sleep times
-            // together with the fact that `insert_tl_entry` ensures `Holder` is properly initialized
+            // and the fact that `Holder::borrow_mut` ensures `Holder` is properly initialized
             // before inserting a key-value pair.
             control.ensure_tls_dropped();
 

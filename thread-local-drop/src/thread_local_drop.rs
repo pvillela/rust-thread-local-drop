@@ -3,7 +3,7 @@
 
 use log;
 use std::{
-    cell::RefCell,
+    cell::{Ref, RefCell, RefMut},
     collections::HashMap,
     fmt::Debug,
     mem::replace,
@@ -64,10 +64,10 @@ impl<T, U> Control<T, U> {
     }
 
     /// Registers a thread-local with `self` in case it is not already registered.
-    pub fn ensure_tl_registered(&self, tl: &'static LocalKey<RefCell<Holder<T, U>>>) {
+    pub fn ensure_tl_registered(&self, tl: &'static LocalKey<Holder<T, U>>) {
         tl.with(|r| {
             // Case already registered.
-            if r.borrow().control.is_some() {
+            if r.control.borrow().is_some() {
                 return;
             }
 
@@ -75,13 +75,13 @@ impl<T, U> Control<T, U> {
 
             // Update Holder.
             {
-                let holder = &mut r.borrow_mut();
-                (*holder).control = Some(self.clone());
+                let mut control = r.control.borrow_mut();
+                *control = Some(self.clone());
             }
 
             // Update self.
             {
-                let data_ptr: *const Option<T> = &r.borrow().data;
+                let data_ptr: *const Option<T> = &*r.data.borrow();
                 let addr = data_ptr as usize;
                 let mut control = self.inner.lock().unwrap();
                 control.tmap.insert(thread::current().id(), addr);
@@ -133,17 +133,36 @@ impl<T, U> Control<T, U> {
 
 /// Holds thead-local data to enable registering with [`Control`].
 pub struct Holder<T, U> {
-    pub data: Option<T>,
-    control: Option<Control<T, U>>,
+    data: RefCell<Option<T>>,
+    control: RefCell<Option<Control<T, U>>>,
+    data_init: fn() -> T,
 }
 
 impl<T, U> Holder<T, U> {
     /// Instantiates an empty [`Holder`].
-    pub fn new() -> Self {
+    pub fn new(data_init: fn() -> T) -> Self {
         Holder {
-            data: None,
-            control: None,
+            data: RefCell::new(None),
+            control: RefCell::new(None),
+            data_init,
         }
+    }
+
+    pub fn borrow(&self) -> Ref<'_, T> {
+        let data = self.data.borrow();
+        if data.is_none() {
+            let mut data = self.data.borrow_mut();
+            *data = Some((self.data_init)())
+        }
+        Ref::map(data, |x: &Option<T>| x.as_ref().unwrap())
+    }
+
+    pub fn borrow_mut(&self) -> RefMut<'_, T> {
+        let mut data = self.data.borrow_mut();
+        if data.is_none() {
+            *data = Some((self.data_init)())
+        }
+        RefMut::map(data, |x: &mut Option<T>| x.as_mut().unwrap())
     }
 }
 
@@ -157,7 +176,7 @@ impl<T, U> Drop for Holder<T, U> {
     fn drop(&mut self) {
         let tid = thread::current().id();
         log::trace!("entered `drop` for Holder on thread {:?}", tid);
-        if self.data.is_none() {
+        if self.data.borrow().is_none() {
             log::trace!(
                 "exiting `drop` for Holder on thread {:?} because data is None",
                 tid
@@ -165,7 +184,8 @@ impl<T, U> Drop for Holder<T, U> {
             return;
         }
         log::trace!("`drop` acquiring control lock on thread {:?}", tid);
-        let control = self.control.as_ref().unwrap();
+        let control = self.control.borrow();
+        let control = control.as_ref().unwrap();
         log::trace!("`drop` acquired control lock on thread {:?}", tid);
         let mut inner = control.inner.lock().unwrap();
         let map = &mut inner.tmap;
@@ -177,7 +197,7 @@ impl<T, U> Drop for Holder<T, U> {
             map
         );
         let op = &control.op;
-        if let Some(data) = &self.data {
+        if let Some(data) = &*self.data.borrow() {
             op(data, &mut inner.acc, &tid);
         }
     }
@@ -188,7 +208,6 @@ mod tests {
     use super::*;
 
     use std::{
-        cell::RefCell,
         collections::HashMap,
         fmt::Debug,
         sync::RwLock,
@@ -204,17 +223,14 @@ mod tests {
     type AccumulatorMap = HashMap<ThreadId, HashMap<u32, Foo>>;
 
     thread_local! {
-        static MY_FOO_MAP: RefCell<Holder<Data, AccumulatorMap>> = RefCell::new(Holder::new());
+        static MY_FOO_MAP: Holder<Data, AccumulatorMap> = Holder::new(HashMap::new);
     }
 
     fn insert_tl_entry(k: u32, v: Foo, control: &Control<Data, AccumulatorMap>) {
         control.ensure_tl_registered(&MY_FOO_MAP);
         MY_FOO_MAP.with(|r| {
-            let x = &mut r.borrow_mut();
-            if x.data.is_none() {
-                (*x).data = Some(HashMap::new());
-            }
-            x.data.as_mut().unwrap().insert(k, v);
+            let data = &mut r.borrow_mut();
+            data.insert(k, v);
         });
     }
 
@@ -234,7 +250,7 @@ mod tests {
     fn assert_tl(other: &Data, msg: &str) {
         MY_FOO_MAP.with(|r| {
             let map = r.borrow();
-            let map = map.data.as_ref().unwrap();
+            // let map = map.data.as_ref().unwrap();
             assert!(map.eq(other), "{}", msg);
         });
     }
@@ -308,7 +324,7 @@ mod tests {
                 // Don't do this in production code. For demonstration purposes only.
                 // Making this call before joining with `h2` is dangerous because there is a data race.
                 // However, in this particular example, it's OK because of the choice of sleep times
-                // together with the fact that `insert_tl_entry` ensures `Holder` is properly initialized
+                // and the fact that `Holder::borrow_mut` ensures `Holder` is properly initialized
                 // before inserting a key-value pair.
                 control.ensure_tls_dropped();
 
