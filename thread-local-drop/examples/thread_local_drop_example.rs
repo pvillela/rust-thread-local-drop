@@ -22,7 +22,7 @@ thread_local! {
 fn insert_tl_entry(k: u32, v: Foo, control: &Control<Data, AccumulatorMap>) {
     control.ensure_tl_registered(&MY_FOO_MAP);
     MY_FOO_MAP.with(|r| {
-        let data = &mut r.borrow_mut();
+        let data = &mut r.borrow_data_mut();
         data.insert(k, v);
     });
 }

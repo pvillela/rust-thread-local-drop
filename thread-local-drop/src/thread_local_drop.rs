@@ -131,7 +131,7 @@ impl<T, U> Control<T, U> {
     }
 }
 
-/// Holds thead-local data to enable registering with [`Control`].
+/// Holds thead-local data to enable registering it with [`Control`].
 pub struct Holder<T, U> {
     data: RefCell<Option<T>>,
     control: RefCell<Option<Control<T, U>>>,
@@ -139,7 +139,9 @@ pub struct Holder<T, U> {
 }
 
 impl<T, U> Holder<T, U> {
-    /// Instantiates an empty [`Holder`].
+    /// Instantiates an empty [`Holder`] with the given data initializer function `data_init`.
+    /// `data_init` is invoked when the data in [`Holder`] is accessed for the first time.
+    /// See `borrow_data` and `borrow_data_mut`.
     pub fn new(data_init: fn() -> T) -> Self {
         Holder {
             data: RefCell::new(None),
@@ -148,7 +150,9 @@ impl<T, U> Holder<T, U> {
         }
     }
 
-    pub fn borrow(&self) -> Ref<'_, T> {
+    /// Immutably borrows the held data.
+    /// If the data is not yet initialized, the function `data_init` passed to `new` is called to initialize the data.
+    pub fn borrow_data(&self) -> Ref<'_, T> {
         let data = self.data.borrow();
         if data.is_none() {
             let mut data = self.data.borrow_mut();
@@ -157,7 +161,9 @@ impl<T, U> Holder<T, U> {
         Ref::map(data, |x: &Option<T>| x.as_ref().unwrap())
     }
 
-    pub fn borrow_mut(&self) -> RefMut<'_, T> {
+    /// Mutably borrows the held data.
+    /// If the data is not yet initialized, the function `data_init` passed to `new` is called to initialize the data.
+    pub fn borrow_data_mut(&self) -> RefMut<'_, T> {
         let mut data = self.data.borrow_mut();
         if data.is_none() {
             *data = Some((self.data_init)())
@@ -229,7 +235,7 @@ mod tests {
     fn insert_tl_entry(k: u32, v: Foo, control: &Control<Data, AccumulatorMap>) {
         control.ensure_tl_registered(&MY_FOO_MAP);
         MY_FOO_MAP.with(|r| {
-            let data = &mut r.borrow_mut();
+            let data = &mut r.borrow_data_mut();
             data.insert(k, v);
         });
     }
@@ -249,7 +255,7 @@ mod tests {
 
     fn assert_tl(other: &Data, msg: &str) {
         MY_FOO_MAP.with(|r| {
-            let map = r.borrow();
+            let map = r.borrow_data();
             // let map = map.data.as_ref().unwrap();
             assert!(map.eq(other), "{}", msg);
         });
