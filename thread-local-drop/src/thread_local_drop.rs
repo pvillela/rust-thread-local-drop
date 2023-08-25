@@ -95,8 +95,11 @@ impl<T, U> Control<T, U> {
 
     /// Forces all registered thread-locals that have not already been dropped to be effectively dropped
     /// by replacing the [`Holder`] data with [`None`].
-    /// Should only be called after joining with all threads that have registered, to ensure proper
-    /// "happened-before" condition between any thread-local data updates and this call.
+    /// Should only be called on the main thread and under the following conditions:
+    /// - The main thread should not use the thread-local controlled by this [`Control`] instance.
+    /// - The call to this method should only take place after the main thread joins (directly or indirectly)
+    ///   with all threads that have registered with this [`Control`] instance. This ensures a proper
+    ///   "happened-before" condition between any thread-local data updates and this call.
     pub fn ensure_tls_dropped(&self) {
         log::trace!("entered `ensure_tls_dropped`");
         let mut control = self.inner.lock().unwrap();
