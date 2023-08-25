@@ -1,7 +1,9 @@
-//! Example usage of [thread_local_drop].
+//! Example usage of [`thread_local_drop`].
 
+use env_logger;
 use std::{
     collections::HashMap,
+    env::set_var,
     fmt::Debug,
     thread::{self, ThreadId},
     time::Duration,
@@ -50,6 +52,10 @@ fn op(data: &HashMap<u32, Foo>, acc: &mut AccumulatorMap, tid: &ThreadId) {
 }
 
 fn main() {
+    // Set env variable value below to "trace" to see debug logs emitted by the library.
+    set_var("RUST_LOG", "trace");
+    _ = env_logger::try_init();
+
     let control = Control::new(HashMap::new(), op);
 
     thread::scope(|s| {

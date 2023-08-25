@@ -106,8 +106,12 @@ impl<T, U> Control<T, U> {
         let inner = control.deref_mut();
         let acc = &mut inner.acc;
         let map = &mut inner.tmap;
+        if map.is_empty() {
+            log::trace!("exited `ensure_tls_dropped` with no keys to drop");
+            return;
+        }
         for (tid, addr) in map.iter() {
-            log::trace!("executing `ensure_tls_dropped` tid {:?}", tid);
+            log::trace!("executing `ensure_tls_dropped` for key={:?}", tid);
             // Safety: provided that:
             // - This function is only called by a thread on which `ensure_tl_registered` has never been called
             // - All other threads have terminaged and been joined, which means that there is a proper
