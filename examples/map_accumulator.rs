@@ -59,53 +59,40 @@ fn main() {
     let control = Control::new(HashMap::new(), op);
 
     thread::scope(|s| {
-        let h1 = s.spawn(|| {
-            insert_tl_entry(1, Foo("a".to_owned()), &control);
-            insert_tl_entry(2, Foo("b".to_owned()), &control);
-            print_tl("Before h1 sleep");
-            thread::sleep(Duration::from_millis(100));
-            print_tl("After h1 sleep");
-        });
+        insert_tl_entry(1, Foo("a".to_owned()), &control);
+        insert_tl_entry(2, Foo("b".to_owned()), &control);
+        print_tl("Main thread after inserts");
 
-        let h2 = s.spawn(|| {
+        s.spawn(|| {
             insert_tl_entry(1, Foo("aa".to_owned()), &control);
-            print_tl("Before h2 sleep");
+            print_tl("Spawned thread before sleep");
             thread::sleep(Duration::from_millis(200));
             insert_tl_entry(2, Foo("bb".to_owned()), &control);
-            print_tl("After h2 sleep");
+            print_tl("Spawned thread after sleep and additional insert");
         });
 
         thread::sleep(Duration::from_millis(50));
+        println!("Main thread after sleep: control={:?}", control);
 
-        println!("Before h1 join: control={:?}", control);
+        // Don't do this in production code. For demonstration purposes only.
+        // Making this call before joining with `h` is dangerous because there is a data race.
+        // However, in this particular example, it's OK because of the choice of sleep times
+        // and the fact that `Holder::borrow_mut` ensures `Holder` is properly initialized
+        // before inserting a key-value pair.
+        control.ensure_tls_dropped();
 
-        {
-            _ = h1.join();
-            println!("After h1 join: control={:?}", control);
-
-            // Don't do this in production code. For demonstration purposes only.
-            // Making this call before joining with `h2` is dangerous because there is a data race.
-            // However, in this particular example, it's OK because of the choice of sleep times
-            // and the fact that `Holder::borrow_mut` ensures `Holder` is properly initialized
-            // before inserting a key-value pair.
-            control.ensure_tls_dropped();
-
-            println!(
-                "After 1st call to `ensure_tls_dropped`: control={:?}",
-                control
-            );
-        }
-
-        {
-            _ = h2.join();
-            println!("After h2 join: control={:?}", control);
-            control.ensure_tls_dropped();
-            println!(
-                "After 2nd call to `ensure_tls_dropped`: control={:?}",
-                control
-            );
-        }
+        println!(
+            "After 1st call to `ensure_tls_dropped`: control={:?}",
+            control
+        );
     });
+
+    println!("After spawned thread join: control={:?}", control);
+    control.ensure_tls_dropped();
+    println!(
+        "After 2nd call to `ensure_tls_dropped`: control={:?}",
+        control
+    );
 
     let acc = control.accumulator().unwrap();
     println!("accumulated={:?}", acc.acc);
