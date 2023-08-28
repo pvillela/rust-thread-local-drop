@@ -1,3 +1,5 @@
+//! Simple example usage of [`thread_local_drop`].
+
 use std::thread::{self, ThreadId};
 use thread_local_drop::{Control, Holder};
 
@@ -28,17 +30,15 @@ fn update_tl(value: Data, control: &Control<Data, AccValue>) {
 fn main() {
     let control = Control::new(0, op);
 
-    thread::scope(|s| {
-        s.spawn(|| {
-            update_tl(1, &control);
-        });
+    update_tl(1, &control);
 
+    thread::scope(|s| {
         s.spawn(|| {
             update_tl(10, &control);
         });
     });
 
-    // Call this after all threads registered with `Control` have been joined.
+    // Call this after all other threads registered with `Control` have been joined.
     control.ensure_tls_dropped();
 
     let acc = control.accumulator().unwrap();

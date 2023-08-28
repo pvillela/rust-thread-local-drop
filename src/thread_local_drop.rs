@@ -49,7 +49,7 @@ impl<T, U: Debug> Debug for Control<T, U> {
     }
 }
 
-impl<T, U> Control<T, U> {
+impl<T, U: Debug> Control<T, U> {
     /// Instantiates a new [Control].
     ///
     /// # Arguments
@@ -70,8 +70,16 @@ impl<T, U> Control<T, U> {
     fn ensure_tl_registered(&self, tl: &'static LocalKey<Holder<T, U>>) {
         tl.with(|r| {
             // Case already registered.
-            if r.control.borrow().is_some() {
-                return;
+            {
+                if r.control.borrow().is_some() {
+                    log::trace!(
+                        "r.control.borrow().is_some() on {:?}; r.control={:?}, self={:?}",
+                        thread::current().id(),
+                        r.control.borrow(),
+                        self
+                    );
+                    return;
+                }
             }
 
             // Otherwise.
@@ -95,11 +103,15 @@ impl<T, U> Control<T, U> {
 
     /// Forces all registered thread-locals that have not already been dropped to be effectively dropped
     /// by replacing the [`Holder`] data with [`None`].
-    /// Should only be called on the main thread and under the following conditions:
-    /// - The main thread should not use the thread-local controlled by this [`Control`] instance.
-    /// - The call to this method should only take place after the main thread joins (directly or indirectly)
-    ///   with all threads that have registered with this [`Control`] instance. This ensures a proper
-    ///   "happened-before" condition between any thread-local data updates and this call.
+    ///
+    /// Should only be called on a thread (typically the main thread) under the following conditions:
+    /// - All other threads that use this [`Control`] instance must have been directly or indirectly spawned
+    ///   from this thread.
+    /// - The call to this method should only take place after this thread joins (directly or indirectly)
+    ///   with all threads that have registered with this [`Control`] instance.
+    ///
+    /// This ensures the absence of data races with a proper "happens-before" condition between any
+    /// thread-local data updates and this call.
     pub fn ensure_tls_dropped(&self) {
         log::trace!("entered `ensure_tls_dropped`");
         let mut control = self.inner.lock().unwrap();
@@ -113,9 +125,8 @@ impl<T, U> Control<T, U> {
         for (tid, addr) in map.iter() {
             log::trace!("executing `ensure_tls_dropped` for key={:?}", tid);
             // Safety: provided that:
-            // - This function is only called by a thread on which `ensure_tl_registered` has never been called
             // - All other threads have terminaged and been joined, which means that there is a proper
-            //   "happened-before" relationship and the only possible remaining activity on those threads
+            //   "happens-before" relationship and the only possible remaining activity on those threads
             //   would be Holder drop method execution, but that method uses the above Mutex to prevent
             //   race conditions.
             let ptr = unsafe { &mut *(*addr as *mut Option<T>) };
@@ -131,6 +142,7 @@ impl<T, U> Control<T, U> {
     /// The result should always be [Ok] when this method is called after `ensure_tls_dropped`.
     /// However, calling this before all thread-locals have been dropped may result in lock
     /// contention with a [TryLockError] result.
+    /// A lock contention will not happen if `ensure_tls_dropped` is called before calling this method.
     pub fn accumulator(
         &self,
     ) -> Result<MutexGuard<Accumulator<U>>, TryLockError<MutexGuard<Accumulator<U>>>> {
@@ -211,6 +223,8 @@ impl<T: Debug, U> Debug for Holder<T, U> {
 }
 
 impl<T, U> Drop for Holder<T, U> {
+    /// Ensures the held data, if any, is deregistered from the associated [`Control`] instance
+    /// and the control instance's accumulation operation is invoked with the held data.
     fn drop(&mut self) {
         let tid = thread::current().id();
         log::trace!("entered `drop` for Holder on thread {:?}", tid);
@@ -287,16 +301,16 @@ mod tests {
         MY_FOO_MAP.with(|r| {
             let map = r.borrow_data();
             // let map = map.data.as_ref().unwrap();
-            assert!(map.eq(other), "{}", msg);
+            assert!(map.eq(other), "{msg}");
         });
     }
 
     fn assert_control_map(control: &Control<Data, AccumulatorMap>, keys: &[ThreadId], msg: &str) {
         let inner = control.inner.lock().unwrap();
         let map = &inner.tmap;
-        assert_eq!(map.len(), keys.len(), "{}", msg);
+        assert_eq!(map.len(), keys.len(), "{msg}");
         for k in keys {
-            assert!(map.contains_key(k), "{}", msg);
+            assert!(map.contains_key(k), "{msg}");
         }
     }
 
@@ -304,87 +318,64 @@ mod tests {
     fn test_all() {
         let control = Control::new(HashMap::new(), op);
 
-        let h1_tid = RwLock::new(thread::current().id());
-        let h2_tid = RwLock::new(thread::current().id());
+        let main_tid = thread::current().id();
+        println!("main_tid={:?}", main_tid);
+        let spawned_tid = RwLock::new(thread::current().id());
+
+        {
+            insert_tl_entry(1, Foo("a".to_owned()), &control);
+            insert_tl_entry(2, Foo("b".to_owned()), &control);
+            println!("after main thread inserts: {:?}", control);
+
+            let other = HashMap::from([(1, Foo("a".to_owned())), (2, Foo("b".to_owned()))]);
+            assert_tl(&other, "After main thread inserts");
+        }
+
+        thread::sleep(Duration::from_millis(100));
 
         thread::scope(|s| {
-            let h1 = s.spawn(|| {
-                let mut lock = h1_tid.try_write().unwrap();
-                *lock = thread::current().id();
-                drop(lock);
-
-                insert_tl_entry(1, Foo("a".to_owned()), &control);
-                insert_tl_entry(2, Foo("b".to_owned()), &control);
-
-                let other = HashMap::from([(1, Foo("a".to_owned())), (2, Foo("b".to_owned()))]);
-                assert_tl(&other, "Before h1 sleep");
-
-                thread::sleep(Duration::from_millis(100));
-
-                assert_tl(&other, "After h1 sleep");
-            });
-
-            let h2 = s.spawn(|| {
-                let mut lock = h2_tid.try_write().unwrap();
+            let h = s.spawn(|| {
+                let mut lock = spawned_tid.try_write().unwrap();
                 *lock = thread::current().id();
                 drop(lock);
 
                 insert_tl_entry(1, Foo("aa".to_owned()), &control);
 
                 let other = HashMap::from([(1, Foo("aa".to_owned()))]);
-                assert_tl(&other, "Before h2 sleep");
+                assert_tl(&other, "Before spawned thread sleep");
 
                 thread::sleep(Duration::from_millis(200));
 
                 insert_tl_entry(2, Foo("bb".to_owned()), &control);
 
                 let other = HashMap::from([(2, Foo("bb".to_owned()))]);
-                assert_tl(&other, "After h2 sleep");
+                assert_tl(&other, "After spawned thread sleep");
             });
 
-            {
-                thread::sleep(Duration::from_millis(50));
+            thread::sleep(Duration::from_millis(50));
 
-                let h1_tid = h1_tid.try_read().unwrap();
-                let h2_tid = h2_tid.try_read().unwrap();
-                let keys = [h1_tid.clone(), h2_tid.clone()];
-                assert_control_map(&control, &keys, "Before h1 join");
-            }
+            let spawned_tid = spawned_tid.try_read().unwrap();
+            println!("spawned_tid={:?}", spawned_tid);
 
-            {
-                _ = h1.join();
-                let h2_tid = h2_tid.try_read().unwrap();
-                let keys = [h2_tid.clone()];
-                assert_control_map(&control, &keys, "After h1 join");
+            let keys = [main_tid.clone(), spawned_tid.clone()];
+            assert_control_map(&control, &keys, "Before joining spawned thread");
 
-                // Don't do this in production code. For demonstration purposes only.
-                // Making this call before joining with `h2` is dangerous because there is a data race.
-                // However, in this particular example, it's OK because of the choice of sleep times
-                // and the fact that `Holder::borrow_mut` ensures `Holder` is properly initialized
-                // before inserting a key-value pair.
-                control.ensure_tls_dropped();
+            _ = h.join();
+            // assert_control_map shouldn't be called here because at this point the destructor of the
+            // Holder on the spawned thread may or may not have run. In the former case, there will only
+            // be one key in the control tmap, in the latter case there will be two keys.
+            println!("after h.join(): {:?}", control);
 
-                let keys = [];
-                assert_control_map(&control, &keys, "After 1st call to `ensure_tls_dropped`");
-            }
-
-            {
-                _ = h2.join();
-                let keys = [];
-                assert_control_map(&control, &keys, "After h2 join");
-                control.ensure_tls_dropped();
-                let keys = [];
-                assert_control_map(&control, &keys, "After 2nd call to `ensure_tls_dropped`");
-            }
+            control.ensure_tls_dropped();
+            let keys = [];
+            assert_control_map(&control, &keys, "After 2nd call to `ensure_tls_dropped`");
         });
 
         {
-            let h1_tid = h1_tid.try_read().unwrap();
-            let h2_tid = h2_tid.try_read().unwrap();
-
+            let spawned_tid = spawned_tid.try_read().unwrap();
             let map1 = HashMap::from([(1, Foo("a".to_owned())), (2, Foo("b".to_owned()))]);
             let map2 = HashMap::from([(1, Foo("aa".to_owned())), (2, Foo("bb".to_owned()))]);
-            let map = HashMap::from([(h1_tid.clone(), map1), (h2_tid.clone(), map2)]);
+            let map = HashMap::from([(main_tid.clone(), map1), (spawned_tid.clone(), map2)]);
 
             let acc = &control.accumulator().unwrap().acc;
 

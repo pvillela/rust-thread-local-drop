@@ -1,4 +1,4 @@
-//! Example usage of [`thread_local_drop`].
+//! Example usage of inappropriate usage of [`thread_local_drop`].
 
 use env_logger;
 use std::{
@@ -67,17 +67,45 @@ fn main() {
             insert_tl_entry(1, Foo("aa".to_owned()), &control);
             print_tl("Spawned thread before sleep");
             thread::sleep(Duration::from_millis(200));
+
+            // At this point, the control tmap is empty due to the timoing of the call to ensure_tls_dropped
+            // below and the data has been set to None. The call below updates the data to Some of a
+            // HashMap with the entry (2, "bb").
             insert_tl_entry(2, Foo("bb".to_owned()), &control);
+
             print_tl("Spawned thread after sleep and additional insert");
         });
+
+        thread::sleep(Duration::from_millis(50));
+        println!("Main thread after sleep: control={:?}", control);
+
+        // Don't do this in production code. For demonstration purposes only.
+        // Making this call before joining with `h` is dangerous because there is a data race.
+        control.ensure_tls_dropped();
+
+        println!(
+            "After premature call to `ensure_tls_dropped`: control={:?}",
+            control
+        );
     });
 
     println!("After spawned thread join: control={:?}", control);
 
+    // This call is useless because the tmap in control has already been emptied by the previous call.
     control.ensure_tls_dropped();
 
-    println!("After call to `ensure_tls_dropped`: control={:?}", control);
+    println!(
+        "After 2nd call to `ensure_tls_dropped`: control={:?}",
+        control
+    );
 
+    // Due to the premature call to ensure_tls_dropped, we have a data race here, with 3 possibilities:
+    // 1. The destructor of the Holder for the spawned thread has control's Mutex lock and the call below panics
+    //    on unwrap.
+    // 2. The destructor of the Holder for the spawned thread is not holding control's Mutex lock and it has not
+    //    completed execution, so the accumulated value does not reflect the second insert in the spawned thread.
+    // 3. The destructor of the Holder for the spawned thread has already completed execution and the accumulated
+    //    value reflects the second insert in the spawned thread.
     let acc = control.accumulator().unwrap();
     println!("accumulated={:?}", acc.acc);
 }

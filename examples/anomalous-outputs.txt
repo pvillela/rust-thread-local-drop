@@ -1,3 +1,6 @@
+BELOW ARE EXAMPLES OF ANOMALOUS OUTPUT THAT MAY RESULT FROM RUNNING THE EXAMPLE map_accumulator_bad.
+====================================================================================================
+
 [09:43:48]pvillela@i16-5620:~/DEV/Rust/thread-local-drop(main)$ cargo run --example map_accumulator
    Compiling thread-local-drop v0.1.0 (/home/pvillela/DEV/Rust/thread-local-drop)
     Finished dev [unoptimized + debuginfo] target(s) in 0.95s
