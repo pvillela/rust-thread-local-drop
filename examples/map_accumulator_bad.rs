@@ -106,6 +106,7 @@ fn main() {
     //    completed execution, so the accumulated value does not reflect the second insert in the spawned thread.
     // 3. The destructor of the Holder for the spawned thread has already completed execution and the accumulated
     //    value reflects the second insert in the spawned thread.
-    let acc = control.accumulator().unwrap();
-    println!("accumulated={:?}", acc.acc);
+    control
+        .with_acc(|acc| println!("accumulated={:?}", acc))
+        .unwrap();
 }

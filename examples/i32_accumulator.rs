@@ -41,6 +41,7 @@ fn main() {
     // Call this after all other threads registered with `Control` have been joined.
     control.ensure_tls_dropped();
 
-    let acc = control.accumulator().unwrap();
-    println!("accumulated={:?}", acc.acc);
+    control
+        .with_acc(|acc| println!("accumulated={:?}", acc))
+        .unwrap();
 }

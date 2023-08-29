@@ -1,6 +1,7 @@
 //! Support for ensuring that destructors are run on thread-local variables after the threads terminate,
 //! as well as support for accumulating the thread-local values using a binary operation.
 
+use derive_more::{Display, Error};
 use log;
 use std::{
     cell::{Ref, RefCell, RefMut},
@@ -13,14 +14,27 @@ use std::{
 };
 
 #[derive(Debug)]
-pub struct Accumulator<U> {
+struct InnerControl<U> {
     /// Thread control map.
     tmap: HashMap<ThreadId, usize>,
     /// Accumulated value.
     pub acc: U,
 }
 
-type InnerControl<U> = Accumulator<U>;
+#[derive(Display, Error, Debug)]
+pub enum ControlLockError {
+    Poisoned,
+    WouldBlock,
+}
+
+impl<S> From<TryLockError<S>> for ControlLockError {
+    fn from(value: TryLockError<S>) -> Self {
+        match value {
+            TryLockError::Poisoned(_) => Self::Poisoned,
+            TryLockError::WouldBlock => Self::WouldBlock,
+        }
+    }
+}
 
 /// Controls the destruction of thread-local variables registered with it.
 /// Such thread-locals must be of type `RefCell<Holder<T>>`.
@@ -142,9 +156,9 @@ impl<T, U> Control<T, U> {
     /// However, calling this before all thread-locals have been dropped may result in lock
     /// contention with a [TryLockError] result.
     /// A lock contention will not happen if `ensure_tls_dropped` is called before calling this method.
-    pub fn accumulator(
+    fn inner(
         &self,
-    ) -> Result<MutexGuard<Accumulator<U>>, TryLockError<MutexGuard<Accumulator<U>>>> {
+    ) -> Result<MutexGuard<InnerControl<U>>, TryLockError<MutexGuard<InnerControl<U>>>> {
         match self.inner.try_lock() {
             Ok(guard) => Ok(guard),
             err @ _ => err,
@@ -152,16 +166,12 @@ impl<T, U> Control<T, U> {
     }
 
     /// Provides access to the value accumulated from thread-locals (see `new`).
-    /// See also `accumulator()`.
     /// The result should always be [Ok] when this method is called after `ensure_tls_dropped`.
     /// However, calling this before all thread-locals have been dropped may result in lock
-    /// contention with a [TryLockError] result.
+    /// contention with a [ControlLockError] result.
     /// A lock contention will not happen if `ensure_tls_dropped` is called before calling this method.
-    pub fn with_acc<V>(
-        &self,
-        f: impl FnOnce(&U) -> V,
-    ) -> Result<V, TryLockError<MutexGuard<Accumulator<U>>>> {
-        let acc = &self.accumulator()?.acc;
+    pub fn with_acc<V>(&self, f: impl FnOnce(&U) -> V) -> Result<V, ControlLockError> {
+        let acc = &self.inner()?.acc;
         Ok(f(acc))
     }
 
@@ -390,7 +400,7 @@ mod tests {
             let map2 = HashMap::from([(1, Foo("aa".to_owned())), (2, Foo("bb".to_owned()))]);
             let map = HashMap::from([(main_tid.clone(), map1), (spawned_tid.clone(), map2)]);
 
-            let acc = &control.accumulator().unwrap().acc;
+            let acc = &control.inner().unwrap().acc;
 
             assert!(acc.eq(&map), "Accumulator check");
         }
