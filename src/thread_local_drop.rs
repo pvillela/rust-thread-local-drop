@@ -49,7 +49,7 @@ impl<T, U: Debug> Debug for Control<T, U> {
     }
 }
 
-impl<T, U: Debug> Control<T, U> {
+impl<T, U> Control<T, U> {
     /// Instantiates a new [Control].
     ///
     /// # Arguments
@@ -73,10 +73,8 @@ impl<T, U: Debug> Control<T, U> {
             {
                 if r.control.borrow().is_some() {
                     log::trace!(
-                        "r.control.borrow().is_some() on {:?}; r.control={:?}, self={:?}",
+                        "r.control.borrow().is_some() on {:?}",
                         thread::current().id(),
-                        r.control.borrow(),
-                        self
                     );
                     return;
                 }
