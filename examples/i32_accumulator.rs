@@ -22,7 +22,7 @@ fn op(data: &Data, acc: &mut AccValue, _: &ThreadId) {
 
 // Create a function to update the thread-local value:
 fn update_tl(value: Data, control: &Control<Data, AccValue>) {
-    control.with_mut(&MY_TL, |data| {
+    control.with_tl_mut(&MY_TL, |data| {
         *data = value;
     });
 }

@@ -22,7 +22,7 @@ thread_local! {
 }
 
 fn insert_tl_entry(k: u32, v: Foo, control: &Control<Data, AccumulatorMap>) {
-    control.with_mut(&MY_FOO_MAP, |data| {
+    control.with_tl_mut(&MY_FOO_MAP, |data| {
         data.insert(k, v);
     });
 }

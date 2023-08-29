@@ -137,6 +137,7 @@ impl<T, U> Control<T, U> {
     }
 
     /// Provides access to the value accumulated from thread-locals (see `new`).
+    /// See also `with_acc()`.
     /// The result should always be [Ok] when this method is called after `ensure_tls_dropped`.
     /// However, calling this before all thread-locals have been dropped may result in lock
     /// contention with a [TryLockError] result.
@@ -150,8 +151,22 @@ impl<T, U> Control<T, U> {
         }
     }
 
+    /// Provides access to the value accumulated from thread-locals (see `new`).
+    /// See also `accumulator()`.
+    /// The result should always be [Ok] when this method is called after `ensure_tls_dropped`.
+    /// However, calling this before all thread-locals have been dropped may result in lock
+    /// contention with a [TryLockError] result.
+    /// A lock contention will not happen if `ensure_tls_dropped` is called before calling this method.
+    pub fn with_acc<V>(
+        &self,
+        f: impl FnOnce(&U) -> V,
+    ) -> Result<V, TryLockError<MutexGuard<Accumulator<U>>>> {
+        let acc = &self.accumulator()?.acc;
+        Ok(f(acc))
+    }
+
     /// Provides immutable access to the data in the `Holder` in argument `tl`;
-    pub fn with<V>(&self, tl: &'static LocalKey<Holder<T, U>>, f: impl FnOnce(&T) -> V) -> V {
+    pub fn with_tl<V>(&self, tl: &'static LocalKey<Holder<T, U>>, f: impl FnOnce(&T) -> V) -> V {
         self.ensure_tl_registered(tl);
         tl.with(|h| {
             let data = h.borrow_data();
@@ -160,7 +175,7 @@ impl<T, U> Control<T, U> {
     }
 
     /// Provides mutable access to the data in the `Holder` in argument `tl`;
-    pub fn with_mut<V>(
+    pub fn with_tl_mut<V>(
         &self,
         tl: &'static LocalKey<Holder<T, U>>,
         f: impl FnOnce(&mut T) -> V,
@@ -277,7 +292,7 @@ mod tests {
     }
 
     fn insert_tl_entry(k: u32, v: Foo, control: &Control<Data, AccumulatorMap>) {
-        control.with_mut(&MY_FOO_MAP, |data| {
+        control.with_tl_mut(&MY_FOO_MAP, |data| {
             data.insert(k, v);
         });
     }
