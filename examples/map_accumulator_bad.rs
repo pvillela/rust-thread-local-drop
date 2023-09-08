@@ -38,7 +38,7 @@ fn print_tl(prefix: &str) {
     });
 }
 
-fn op(data: &HashMap<u32, Foo>, acc: &mut AccumulatorMap, tid: &ThreadId) {
+fn op(data: HashMap<u32, Foo>, acc: &mut AccumulatorMap, tid: &ThreadId) {
     println!(
         "`op` called from {:?} with data {:?}",
         thread::current().id(),
@@ -47,7 +47,7 @@ fn op(data: &HashMap<u32, Foo>, acc: &mut AccumulatorMap, tid: &ThreadId) {
 
     acc.entry(tid.clone()).or_insert_with(|| HashMap::new());
     for (k, v) in data {
-        acc.get_mut(tid).unwrap().insert(*k, v.clone());
+        acc.get_mut(tid).unwrap().insert(k, v.clone());
     }
 }
 

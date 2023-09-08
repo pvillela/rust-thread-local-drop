@@ -45,7 +45,7 @@ pub struct Control<T, U> {
     /// Keeps track of registered threads and accumulated value.
     inner: Arc<Mutex<InnerControl<U>>>,
     /// Binary operation that combines data from thread-locals with accumulated value.
-    op: Arc<dyn Fn(&T, &mut U, &ThreadId) + Send + Sync>,
+    op: Arc<dyn Fn(T, &mut U, &ThreadId) + Send + Sync>,
 }
 
 impl<T, U> Clone for Control<T, U> {
@@ -70,7 +70,7 @@ impl<T, U> Control<T, U> {
     /// * `acc_base` - Initial value of accumulator that will be combined with thread-local values
     /// using `op`.
     /// * `op` - Binary operation used to combine thread-local values with accumulated value.
-    pub fn new(acc_base: U, op: impl Fn(&T, &mut U, &ThreadId) + 'static + Send + Sync) -> Self {
+    pub fn new(acc_base: U, op: impl Fn(T, &mut U, &ThreadId) + 'static + Send + Sync) -> Self {
         Control {
             inner: Arc::new(Mutex::new(InnerControl {
                 tmap: HashMap::new(),
@@ -144,7 +144,7 @@ impl<T, U> Control<T, U> {
             let ptr = unsafe { &mut *(*addr as *mut Option<T>) };
             let data = replace(ptr, None);
             if let Some(data) = data {
-                (&self.op)(&data, acc, tid);
+                (&self.op)(data, acc, tid);
             }
         }
         *map = HashMap::new();
@@ -272,7 +272,8 @@ impl<T, U> Drop for Holder<T, U> {
             map
         );
         let op = &control.op;
-        if let Some(data) = &*self.data.borrow() {
+        let data = self.data.take();
+        if let Some(data) = data {
             op(data, &mut inner.acc, &tid);
         }
     }
@@ -307,7 +308,7 @@ mod tests {
         });
     }
 
-    fn op(data: &HashMap<u32, Foo>, acc: &mut AccumulatorMap, tid: &ThreadId) {
+    fn op(data: HashMap<u32, Foo>, acc: &mut AccumulatorMap, tid: &ThreadId) {
         println!(
             "`op` called from {:?} with data {:?}",
             thread::current().id(),
@@ -316,14 +317,14 @@ mod tests {
 
         acc.entry(tid.clone()).or_insert_with(|| HashMap::new());
         for (k, v) in data {
-            acc.get_mut(tid).unwrap().insert(*k, v.clone());
+            acc.get_mut(tid).unwrap().insert(k, v.clone());
         }
     }
 
     fn assert_tl(other: &Data, msg: &str) {
         MY_FOO_MAP.with(|r| {
             let map = r.borrow_data();
-            // let map = map.data.as_ref().unwrap();
+            println!("`assert_tl` map={:?}, other={:?}", map, other);
             assert!(map.eq(other), "{msg}");
         });
     }
@@ -371,7 +372,7 @@ mod tests {
 
                 insert_tl_entry(2, Foo("bb".to_owned()), &control);
 
-                let other = HashMap::from([(2, Foo("bb".to_owned()))]);
+                let other = HashMap::from([(1, Foo("aa".to_owned())), (2, Foo("bb".to_owned()))]);
                 assert_tl(&other, "After spawned thread sleep");
             });
 

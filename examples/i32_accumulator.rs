@@ -16,7 +16,7 @@ thread_local! {
 
 // Define your accumulation operation.
 // You can use the closure `|_, _, _| ()` inline in the `Control` constructor if you don't need an accumulator.
-fn op(data: &Data, acc: &mut AccValue, _: &ThreadId) {
+fn op(data: Data, acc: &mut AccValue, _: &ThreadId) {
     *acc += data;
 }
 
