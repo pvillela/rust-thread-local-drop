@@ -116,7 +116,7 @@ fn main() {
     }
 
     {
-        _ = h1.join();
+        h1.join().unwrap();
         {
             let control = get_tl_drop_control().lock().unwrap();
             println!("After h1 join: control={:?}", control);
@@ -130,7 +130,7 @@ fn main() {
     }
 
     {
-        _ = h2.join();
+        h2.join().unwrap();
         {
             let control = get_tl_drop_control().lock().unwrap();
             println!("After h2 join: control={:?}", control);

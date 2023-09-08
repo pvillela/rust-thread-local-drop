@@ -161,7 +161,7 @@ impl<T, U> Control<T, U> {
     ) -> Result<MutexGuard<InnerControl<U>>, TryLockError<MutexGuard<InnerControl<U>>>> {
         match self.inner.try_lock() {
             Ok(guard) => Ok(guard),
-            err @ _ => err,
+            err => err,
         }
     }
 
@@ -324,8 +324,7 @@ mod tests {
     fn assert_tl(other: &Data, msg: &str) {
         MY_FOO_MAP.with(|r| {
             let map = r.borrow_data();
-            println!("`assert_tl` map={:?}, other={:?}", map, other);
-            assert!(map.eq(other), "{msg}");
+            assert!(map.eq(other), "{msg} - map={:?}, other={:?}", map, other);
         });
     }
 
@@ -384,7 +383,7 @@ mod tests {
             let keys = [main_tid.clone(), spawned_tid.clone()];
             assert_control_map(&control, &keys, "Before joining spawned thread");
 
-            _ = h.join();
+            h.join().unwrap();
             // assert_control_map shouldn't be called here because at this point the destructor of the
             // Holder on the spawned thread may or may not have run. In the former case, there will only
             // be one key in the control tmap, in the latter case there will be two keys.
