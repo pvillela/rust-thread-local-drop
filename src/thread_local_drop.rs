@@ -286,6 +286,7 @@ mod tests {
     use std::{
         collections::HashMap,
         fmt::Debug,
+        ops::Deref,
         sync::RwLock,
         thread::{self, ThreadId},
         time::Duration,
@@ -323,8 +324,9 @@ mod tests {
 
     fn assert_tl(other: &Data, msg: &str) {
         MY_FOO_MAP.with(|r| {
-            let map = r.borrow_data();
-            assert!(map.eq(other), "{msg} - map={:?}, other={:?}", map, other);
+            let map_ref = r.borrow_data();
+            let map = map_ref.deref();
+            assert_eq!(map, other, "{msg}");
         });
     }
 
@@ -402,7 +404,7 @@ mod tests {
 
             let acc = &control.inner().unwrap().acc;
 
-            assert!(acc.eq(&map), "Accumulator check");
+            assert_eq!(acc, &map, "Accumulator check");
         }
     }
 }
