@@ -18,7 +18,7 @@ struct InnerControl<U> {
     /// Thread control map.
     tmap: HashMap<ThreadId, usize>,
     /// Accumulated value.
-    pub acc: U,
+    acc: U,
 }
 
 #[derive(Display, Error, Debug)]
@@ -39,7 +39,7 @@ impl<S> From<TryLockError<S>> for ControlLockError {
 /// Controls the destruction of thread-local variables registered with it.
 /// Such thread-locals must be of type `RefCell<Holder<T>>`.
 /// `U` is the type of the accumulated value resulting from an initial base value and
-/// the application of a binary operation to each thread-local value and the current accumulated
+/// the application of an operation to each thread-local value and the current accumulated
 /// value upon termination of each thread. (See `new` method.)
 pub struct Control<T, U> {
     /// Keeps track of registered threads and accumulated value.
