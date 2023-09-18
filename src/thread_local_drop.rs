@@ -166,13 +166,27 @@ impl<T, U> Control<T, U> {
     }
 
     /// Provides access to the value accumulated from thread-locals (see `new`).
+    ///
     /// The result should always be [Ok] when this method is called after `ensure_tls_dropped`.
-    /// However, calling this before all thread-locals have been dropped may result in lock
+    /// However, calling this before all thread-locals have been deregistered may result in lock
     /// contention with a [ControlLockError] result.
     /// A lock contention will not happen if `ensure_tls_dropped` is called before calling this method.
     pub fn with_acc<V>(&self, f: impl FnOnce(&U) -> V) -> Result<V, ControlLockError> {
         let acc = &self.inner()?.acc;
         Ok(f(acc))
+    }
+
+    /// Returns the accumulated value in the [Control] struct, using a value of the same type to replace
+    /// the existing accumulated value.
+    ///
+    /// The result should always be [Ok] when this method is called after `ensure_tls_dropped`.
+    /// However, calling this before all thread-locals have been deregistered may result in lock
+    /// contention with a [ControlLockError] result.
+    /// A lock contention will not happen if `ensure_tls_dropped` is called before calling this method.
+    pub fn take_acc(&self, replacement: U) -> Result<U, ControlLockError> {
+        let acc = &mut self.inner()?.acc;
+        let res = replace(acc, replacement);
+        Ok(res)
     }
 
     /// Provides immutable access to the data in the `Holder` in argument `tl`;
@@ -260,6 +274,9 @@ impl<T, U> Drop for Holder<T, U> {
         }
         log::trace!("`drop` acquiring control lock on thread {:?}", tid);
         let control = self.control.borrow();
+        if control.is_none() {
+            return;
+        }
         let control = control.as_ref().unwrap();
         log::trace!("`drop` acquired control lock on thread {:?}", tid);
         let mut inner = control.inner.lock().unwrap();
