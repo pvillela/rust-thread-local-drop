@@ -2,7 +2,6 @@
 //! as well as support for accumulating the thread-local values using a binary operation.
 
 use derive_more::{Display, Error};
-use log;
 use std::{
     cell::{Ref, RefCell, RefMut},
     collections::HashMap,
@@ -142,9 +141,9 @@ impl<T, U> Control<T, U> {
             //   would be Holder drop method execution, but that method uses the above Mutex to prevent
             //   race conditions.
             let ptr = unsafe { &mut *(*addr as *mut Option<T>) };
-            let data = replace(ptr, None);
+            let data = Option::take(ptr);
             if let Some(data) = data {
-                (&self.op)(data, acc, tid);
+                (self.op)(data, acc, tid);
             }
         }
         *map = HashMap::new();
