@@ -146,7 +146,8 @@ impl<T, U> Control<T, U> {
                 (self.op)(data, acc, tid);
             }
         }
-        *map = HashMap::new();
+        // Removed line below to allow resumption after pause in latency-trace
+        // *map = HashMap::new();
     }
 
     /// Provides access to the value accumulated from thread-locals (see `new`).
