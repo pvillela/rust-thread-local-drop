@@ -347,12 +347,29 @@ mod tests {
         });
     }
 
+    fn typed_value<T>(addr: usize) -> &'static Option<T> {
+        unsafe { &*(addr as *const Option<T>) }
+    }
+
     fn assert_control_map(control: &Control<Data, AccumulatorMap>, keys: &[ThreadId], msg: &str) {
         let inner = control.inner.lock().unwrap();
         let map = &inner.tmap;
-        assert_eq!(map.len(), keys.len(), "{msg}");
+        for (k, v) in map {
+            let value = typed_value::<Data>(*v);
+            assert!(
+                keys.contains(k) || value.is_none(),
+                "{msg} - map contains spurious key {:?} with value {:?}",
+                k,
+                value
+            );
+        }
         for k in keys {
-            assert!(map.contains_key(k), "{msg}");
+            let v = map.get(k);
+            let res = match v {
+                None => false,
+                Some(&addr) => typed_value::<Data>(addr).is_some(),
+            };
+            assert!(res, "{msg} - map is missing key {:?}", k);
         }
     }
 
@@ -410,7 +427,7 @@ mod tests {
 
             control.ensure_tls_dropped();
             let keys = [];
-            assert_control_map(&control, &keys, "After 2nd call to `ensure_tls_dropped`");
+            assert_control_map(&control, &keys, "After call to `ensure_tls_dropped`");
         });
 
         {
