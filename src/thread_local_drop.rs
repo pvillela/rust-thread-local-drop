@@ -146,8 +146,8 @@ impl<T, U> Control<T, U> {
                 (self.op)(data, acc, tid);
             }
         }
-        // Removed line below to allow resumption after pause in latency-trace
-        // *map = HashMap::new();
+        // tmap's keys are left alone to enable users of this framework to resume processing after
+        // the thread-local data is accumulated.
     }
 
     /// Provides access to the value accumulated from thread-locals (see `new`).
