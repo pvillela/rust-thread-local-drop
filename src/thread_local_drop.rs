@@ -141,8 +141,15 @@ impl<T, U> Control<T, U> {
             //   would be Holder drop method execution, but that method uses the above Mutex to prevent
             //   race conditions.
             let ptr = unsafe { &mut *(*addr as *mut Option<T>) };
+            log::trace!(
+                "got ptr with addr={} -- `ensure_tls_dropped` for key={:?}",
+                addr,
+                tid
+            );
             let data = Option::take(ptr);
+            log::trace!("executed `take` -- `ensure_tls_dropped` for key={:?}", tid);
             if let Some(data) = data {
+                log::trace!("executing `op` -- `ensure_tls_dropped` for key={:?}", tid);
                 (self.op)(data, acc, tid);
             }
         }
@@ -249,6 +256,16 @@ impl<T, U> Holder<T, U> {
         if data.is_none() {
             *data = Some((self.data_init)())
         }
+
+        fn decimal_address<T>(r: &T) -> usize {
+            r as *const T as usize
+        }
+        log::trace!(
+            "`borrow_data_mut` address={} on {:?}",
+            decimal_address(&*data),
+            thread::current().id()
+        );
+
         RefMut::map(data, |x: &mut Option<T>| x.as_mut().unwrap())
     }
 }
@@ -265,6 +282,20 @@ impl<T, U> Drop for Holder<T, U> {
     fn drop(&mut self) {
         let tid = thread::current().id();
         log::trace!("entered `drop` for Holder on thread {:?}", tid);
+        let control = self.control.borrow();
+        if control.is_none() {
+            log::trace!(
+                "exiting `drop` for Holder on thread {:?} because control is None",
+                tid
+            );
+            return;
+        }
+        let control = control.as_ref().unwrap();
+
+        log::trace!("`drop` acquiring control lock on thread {:?}", tid);
+        let mut inner = control.inner.lock().unwrap();
+        log::trace!("`drop` acquired control lock on thread {:?}", tid);
+
         if self.data.borrow().is_none() {
             log::trace!(
                 "exiting `drop` for Holder on thread {:?} because data is None",
@@ -272,14 +303,6 @@ impl<T, U> Drop for Holder<T, U> {
             );
             return;
         }
-        log::trace!("`drop` acquiring control lock on thread {:?}", tid);
-        let control = self.control.borrow();
-        if control.is_none() {
-            return;
-        }
-        let control = control.as_ref().unwrap();
-        log::trace!("`drop` acquired control lock on thread {:?}", tid);
-        let mut inner = control.inner.lock().unwrap();
         let map = &mut inner.tmap;
         let entry = map.remove_entry(&tid);
         log::trace!(
@@ -293,6 +316,7 @@ impl<T, U> Drop for Holder<T, U> {
         if let Some(data) = data {
             op(data, &mut inner.acc, &tid);
         }
+        log::trace!("`drop` exited on thread {:?}", tid);
     }
 }
 

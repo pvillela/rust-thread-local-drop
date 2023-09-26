@@ -91,7 +91,11 @@ fn main() {
 
     println!("After spawned thread join: control={:?}", control);
 
-    // This call is useless because the tmap in control has already been emptied by the previous call.
+    // Due to the above premature call to `ensure_tls_dropped`, we have a data race here. Therefore, the
+    // address in `control`'s `tmap` associated with the spawned thread may point to an invalid memory chunk,
+    // resulting in a sgementation fault when the address is dereferenced by `ensure_tls_dropped`.
+    // In case the memory chung pointed to by the address is valid, there may be additional issues further
+    // below where the accumulator is printed.
     control.ensure_tls_dropped();
 
     println!(
@@ -99,7 +103,8 @@ fn main() {
         control
     );
 
-    // Due to the premature call to ensure_tls_dropped, we have a data race here, with 3 possibilities:
+    // Due to the above-mentioned data race, if the address in question points to a valid memory chunk and
+    // a segmentation fault doesn't occur above, then there can be 3 possibilities:
     // 1. The destructor of the Holder for the spawned thread has control's Mutex lock and the call below panics
     //    on unwrap.
     // 2. The destructor of the Holder for the spawned thread is not holding control's Mutex lock and it has not
