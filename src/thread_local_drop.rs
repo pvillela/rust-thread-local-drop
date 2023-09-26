@@ -20,6 +20,7 @@ struct InnerControl<U> {
     acc: U,
 }
 
+/// Similar to [TryLockError].
 #[derive(Display, Error, Debug)]
 pub enum ControlLockError {
     Poisoned,
@@ -35,11 +36,11 @@ impl<S> From<TryLockError<S>> for ControlLockError {
     }
 }
 
-/// Controls the destruction of thread-local variables registered with it.
-/// Such thread-locals must be of type `RefCell<Holder<T>>`.
+/// Controls the destruction of thread-local values registered with it.
+/// Such values of type `T` must be held in thread-locals of type [`Holder<T>`].
 /// `U` is the type of the accumulated value resulting from an initial base value and
 /// the application of an operation to each thread-local value and the current accumulated
-/// value upon termination of each thread. (See `new` method.)
+/// value upon dropping of each thread-local value. (See [`new`](Control::new) method.)
 pub struct Control<T, U> {
     /// Keeps track of registered threads and accumulated value.
     inner: Arc<Mutex<InnerControl<U>>>,
@@ -112,10 +113,10 @@ impl<T, U> Control<T, U> {
         });
     }
 
-    /// Forces all registered thread-locals that have not already been dropped to be effectively dropped
-    /// by replacing the [`Holder`] data with [`None`], and accumulates the values in those thread-locals.
+    /// Forces all registered thread-local values that have not already been dropped to be effectively dropped
+    /// by replacing the [`Holder`] data with [`None`], and accumulates the values contained in those thread-locals.
     ///
-    /// Should only be called on a thread (typically the main thread) under the following conditions:
+    /// Should only be called from a thread (typically the main thread) under the following conditions:
     /// - All other threads that use this [`Control`] instance must have been directly or indirectly spawned
     ///   from this thread; ***and***
     /// - Any prior updates to holder values must have had a *happened before* relationship to this call;
