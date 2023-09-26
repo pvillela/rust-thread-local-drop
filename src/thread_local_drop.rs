@@ -113,15 +113,20 @@ impl<T, U> Control<T, U> {
     }
 
     /// Forces all registered thread-locals that have not already been dropped to be effectively dropped
-    /// by replacing the [`Holder`] data with [`None`].
+    /// by replacing the [`Holder`] data with [`None`], and accumulates the values in those thread-locals.
     ///
     /// Should only be called on a thread (typically the main thread) under the following conditions:
     /// - All other threads that use this [`Control`] instance must have been directly or indirectly spawned
-    ///   from this thread.
-    /// - The call to this method should only take place after this thread joins (directly or indirectly)
-    ///   with all threads that have registered with this [`Control`] instance.
+    ///   from this thread; ***and***
+    /// - Any prior updates to holder values must have had a *happened before* relationship to this call;
+    ///   ***and***
+    /// - Any further updates to holder values must have a *happened after* relationship to this call.
+    ///   
+    /// In particular, the last two conditions are satisfied if the call to this method takes place after
+    /// this thread joins (directly or indirectly) with all threads that have registered with this [`Control`]
+    /// instance.
     ///
-    /// This ensures the absence of data races with a proper "happens-before" condition between any
+    /// These conditions ensure the absence of data races with a proper "happens-before" condition between any
     /// thread-local data updates and this call.
     pub fn ensure_tls_dropped(&self) {
         log::trace!("entered `ensure_tls_dropped`");
@@ -177,7 +182,6 @@ impl<T, U> Control<T, U> {
     /// The result should always be [Ok] when this method is called after `ensure_tls_dropped`.
     /// However, calling this before all thread-locals have been deregistered may result in lock
     /// contention with a [ControlLockError] result.
-    /// A lock contention will not happen if `ensure_tls_dropped` is called before calling this method.
     pub fn with_acc<V>(&self, f: impl FnOnce(&U) -> V) -> Result<V, ControlLockError> {
         let acc = &self.inner()?.acc;
         Ok(f(acc))
@@ -189,7 +193,6 @@ impl<T, U> Control<T, U> {
     /// The result should always be [Ok] when this method is called after `ensure_tls_dropped`.
     /// However, calling this before all thread-locals have been deregistered may result in lock
     /// contention with a [ControlLockError] result.
-    /// A lock contention will not happen if `ensure_tls_dropped` is called before calling this method.
     pub fn take_acc(&self, replacement: U) -> Result<U, ControlLockError> {
         let acc = &mut self.inner()?.acc;
         let res = replace(acc, replacement);

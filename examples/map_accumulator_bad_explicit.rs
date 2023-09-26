@@ -63,7 +63,7 @@ fn main() {
     print_tl("Main thread after inserts");
 
     thread::scope(|s| {
-        s.spawn(|| {
+        let h = s.spawn(|| {
             insert_tl_entry(1, Foo("aa".to_owned()), &control);
             print_tl("Spawned thread before sleep");
             thread::sleep(Duration::from_millis(200));
@@ -87,15 +87,14 @@ fn main() {
             "After premature call to `ensure_tls_dropped`: control={:?}",
             control
         );
+
+        // Explicit join at end of scope.
+        h.join().unwrap();
     });
 
     println!("After spawned thread join: control={:?}", control);
 
-    // Due to the above premature call to `ensure_tls_dropped`, we have a data race here. Therefore, the
-    // address in `control`'s `tmap` associated with the spawned thread may point to an invalid memory chunk,
-    // resulting in a sgementation fault when the address is dereferenced by `ensure_tls_dropped`.
-    // In case the memory chung pointed to by the address is valid, there may be additional issues further
-    // below where the accumulator is printed.
+    // Due to the explicit join above, there is no data race here.
     control.ensure_tls_dropped();
 
     println!(
