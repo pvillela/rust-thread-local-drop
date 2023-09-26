@@ -33,13 +33,13 @@
 //!
 //! // Define your accumulation operation.
 //! // You can use the closure `|_, _, _| ()` inline in the `Control` constructor if you don't need an accumulator.
-//! fn op(data: &Data, acc: &mut AccValue, _: &ThreadId) {
+//! fn op(data: Data, acc: &mut AccValue, _: &ThreadId) {
 //!     *acc += data;
 //! }
 //!
 //! // Create a function to update the thread-local value:
 //! fn update_tl(value: Data, control: &Control<Data, AccValue>) {
-//!     control.with_mut(&MY_TL, |data| {
+//!     control.with_tl_mut(&MY_TL, |data| {
 //!         *data = value;
 //!     });
 //! }
@@ -58,8 +58,9 @@
 //!     // Call this after all other threads registered with `Control` have been joined.
 //!     control.ensure_tls_dropped();
 //!
-//!     let acc = control.accumulator().unwrap();
-//!     println!("accumulated={}", acc.acc);
+//!     control
+//!         .with_acc(|acc| println!("accumulated={}", acc))
+//!         .unwrap();
 //! }
 //! ```
 //!
