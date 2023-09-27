@@ -59,11 +59,15 @@ fn main() {
         });
     });
 
-    // Call this after all other threads registered with `Control` have been joined.
-    control.ensure_tls_dropped();
+    {
+        // Acquire `control`'s lock.
+        let mut lock = control.lock();
 
-    control
-        .with_acc(|acc| println!("accumulated={}", acc));
+        // Call this after all other threads registered with `control` have been joined.
+        control.ensure_tls_dropped(&mut lock);
+
+        control.with_acc(&lock, |acc| println!("accumulated={}", acc));
+    }
 }
 ```
 

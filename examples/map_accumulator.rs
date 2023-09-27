@@ -74,9 +74,12 @@ fn main() {
 
     println!("After spawned thread join: control={:?}", control);
 
-    control.ensure_tls_dropped();
+    {
+        let mut lock = control.lock();
+        control.ensure_tls_dropped(&mut lock);
 
-    println!("After call to `ensure_tls_dropped`: control={:?}", control);
+        println!("After call to `ensure_tls_dropped`: control={:?}", control);
 
-    control.with_acc(|acc| println!("accumulated={:?}", acc));
+        control.with_acc(&lock, |acc| println!("accumulated={:?}", acc));
+    }
 }

@@ -31,6 +31,12 @@ pub struct Control<T, U> {
     op: Arc<dyn Fn(T, &mut U, &ThreadId) + Send + Sync>,
 }
 
+/// Encapsulates a [`MutexGuard`] for use by public methods that require [`Control`]'s lock to be acquired.
+///
+/// An cquired lock can be used with multiple method calls and droped after the last call.
+/// As with any lock, the caller should ensure the lock is dropped as soon as it is no longer needed.
+pub struct ControlLock<'a, U: 'a>(MutexGuard<'a, InnerControl<U>>);
+
 impl<T, U> Clone for Control<T, U> {
     fn clone(&self) -> Self {
         Control {
@@ -96,6 +102,15 @@ impl<T, U> Control<T, U> {
         });
     }
 
+    /// Acquires a lock for use by public [`Control`] methods that require its internal Mutex to be locked.
+    ///
+    /// An cquired lock can be used with multiple method calls and droped after the last call.
+    /// As with any lock, the caller should ensure the lock is dropped as soon as it is no longer needed.
+    pub fn lock(&self) -> ControlLock<'_, U> {
+        let lock = self.inner.lock().unwrap();
+        ControlLock(lock)
+    }
+
     /// Forces all registered thread-local values that have not already been dropped to be effectively dropped
     /// by replacing the [`Holder`] data with [`None`], and accumulates the values contained in those thread-locals.
     ///
@@ -112,10 +127,13 @@ impl<T, U> Control<T, U> {
     ///
     /// These conditions ensure the absence of data races with a proper "happens-before" condition between any
     /// thread-local data updates and this call.
-    pub fn ensure_tls_dropped(&self) {
+    ///
+    /// The [`lock`](Self::lock) method can be used to obtain the `lock` argument.
+    /// An cquired lock can be used with multiple method calls and droped after the last call.
+    /// As with any lock, the caller should ensure the lock is dropped as soon as it is no longer needed.
+    pub fn ensure_tls_dropped(&self, lock: &mut ControlLock<'_, U>) {
         log::trace!("entered `ensure_tls_dropped`");
-        let mut control = self.inner.lock().unwrap();
-        let inner = control.deref_mut();
+        let inner = lock.0.deref_mut();
         let acc = &mut inner.acc;
         let map = &mut inner.tmap;
         if map.is_empty() {
@@ -146,20 +164,23 @@ impl<T, U> Control<T, U> {
         // the thread-local data is accumulated.
     }
 
-    fn inner(&self) -> MutexGuard<InnerControl<U>> {
-        self.inner.lock().unwrap()
-    }
-
     /// Provides access to the accumulated value in the [Control] struct.
     ///
-    pub fn with_acc<V>(&self, f: impl FnOnce(&U) -> V) -> V {
-        f(&self.inner().acc)
+    /// The [`lock`](Self::lock) method can be used to obtain the `lock` argument.
+    /// An cquired lock can be used with multiple method calls and droped after the last call.
+    /// As with any lock, the caller should ensure the lock is dropped as soon as it is no longer needed.
+    pub fn with_acc<V>(&self, lock: &ControlLock<'_, U>, f: impl FnOnce(&U) -> V) -> V {
+        f(&lock.0.acc)
     }
 
     /// Returns the accumulated value in the [Control] struct, using a value of the same type to replace
     /// the existing accumulated value.
-    pub fn take_acc(&self, replacement: U) -> U {
-        let acc = &mut self.inner().acc;
+    ///
+    /// The [`lock`](Self::lock) method can be used to obtain the `lock` argument.
+    /// An cquired lock can be used with multiple method calls and droped after the last call.
+    /// As with any lock, the caller should ensure the lock is dropped as soon as it is no longer needed.
+    pub fn take_acc(&self, lock: &mut ControlLock<'_, U>, replacement: U) -> U {
+        let acc = &mut lock.0.acc;
         replace(acc, replacement)
     }
 
@@ -411,12 +432,10 @@ mod tests {
             assert_control_map(&control, &keys, "Before joining spawned thread");
 
             h.join().unwrap();
-            // assert_control_map shouldn't be called here because at this point the destructor of the
-            // Holder on the spawned thread may or may not have run. In the former case, there will only
-            // be one key in the control tmap, in the latter case there will be two keys.
+
             println!("after h.join(): {:?}", control);
 
-            control.ensure_tls_dropped();
+            control.ensure_tls_dropped(&mut control.lock());
             let keys = [];
             assert_control_map(&control, &keys, "After call to `ensure_tls_dropped`");
         });
@@ -427,9 +446,11 @@ mod tests {
             let map2 = HashMap::from([(1, Foo("aa".to_owned())), (2, Foo("bb".to_owned()))]);
             let map = HashMap::from([(main_tid.clone(), map1), (spawned_tid.clone(), map2)]);
 
-            let acc = &control.inner().acc;
-
-            assert_eq!(acc, &map, "Accumulator check");
+            {
+                let lock = control.lock();
+                let acc = &lock.0.acc;
+                assert_eq!(acc, &map, "Accumulator check");
+            }
         }
     }
 }

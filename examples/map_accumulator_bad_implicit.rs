@@ -81,7 +81,7 @@ fn main() {
 
         // Don't do this in production code. For demonstration purposes only.
         // Making this call before joining with `_h` is dangerous because there is a data race.
-        control.ensure_tls_dropped();
+        control.ensure_tls_dropped(&mut control.lock());
 
         println!(
             "After premature call to `ensure_tls_dropped`: control={:?}",
@@ -94,23 +94,27 @@ fn main() {
 
     println!("After spawned thread join: control={:?}", control);
 
-    // Due to the implicit join above, we have a data race here. Therefore, the
-    // address in `control`'s `tmap` associated with the spawned thread may point to an invalid memory chunk,
-    // resulting in a sgementation fault when the address is dereferenced by `ensure_tls_dropped`.
-    // In case the memory chung pointed to by the address is valid, there may be additional issues further
-    // below where the accumulator is printed.
-    control.ensure_tls_dropped();
+    {
+        let mut lock = control.lock();
 
-    println!(
-        "After 2nd call to `ensure_tls_dropped`: control={:?}",
-        control
-    );
+        // Due to the implicit join above, we have a data race here. Therefore, the
+        // address in `control`'s `tmap` associated with the spawned thread may point to an invalid memory chunk,
+        // resulting in a sgementation fault when the address is dereferenced by `ensure_tls_dropped`.
+        // In case the memory chunk pointed to by the address is valid, there may be additional issues further
+        // below where the accumulator is printed.
+        control.ensure_tls_dropped(&mut lock);
 
-    // Due to the above-mentioned data race, if the address in question points to a valid memory chunk and
-    // a segmentation fault doesn't occur above, then there can be 3 possibilities:
-    // 1. The destructor of the Holder for the spawned thread is not holding control's Mutex lock and it has not
-    //    completed execution, so the accumulated value does not reflect the second insert in the spawned thread.
-    // 2. The destructor of the Holder for the spawned thread has already completed execution and the accumulated
-    //    value reflects the second insert in the spawned thread.
-    control.with_acc(|acc| println!("accumulated={:?}", acc));
+        println!(
+            "After 2nd call to `ensure_tls_dropped`: control={:?}",
+            control
+        );
+
+        // Due to the above-mentioned data race, if the address in question points to a valid memory chunk and
+        // a segmentation fault doesn't occur above, then there can be 3 possibilities:
+        // 1. The destructor of the Holder for the spawned thread is not holding control's Mutex lock and it has not
+        //    completed execution, so the accumulated value does not reflect the second insert in the spawned thread.
+        // 2. The destructor of the Holder for the spawned thread has already completed execution and the accumulated
+        //    value reflects the second insert in the spawned thread.
+        control.with_acc(&lock, |acc| println!("accumulated={:?}", acc));
+    }
 }
