@@ -108,13 +108,9 @@ fn main() {
 
     // Due to the above-mentioned data race, if the address in question points to a valid memory chunk and
     // a segmentation fault doesn't occur above, then there can be 3 possibilities:
-    // 1. The destructor of the Holder for the spawned thread has control's Mutex lock and the call below panics
-    //    on unwrap.
-    // 2. The destructor of the Holder for the spawned thread is not holding control's Mutex lock and it has not
+    // 1. The destructor of the Holder for the spawned thread is not holding control's Mutex lock and it has not
     //    completed execution, so the accumulated value does not reflect the second insert in the spawned thread.
-    // 3. The destructor of the Holder for the spawned thread has already completed execution and the accumulated
+    // 2. The destructor of the Holder for the spawned thread has already completed execution and the accumulated
     //    value reflects the second insert in the spawned thread.
-    control
-        .with_acc(|acc| println!("accumulated={:?}", acc))
-        .unwrap();
+    control.with_acc(|acc| println!("accumulated={:?}", acc));
 }

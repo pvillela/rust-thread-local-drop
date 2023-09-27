@@ -1,14 +1,13 @@
 //! Support for ensuring that destructors are run on thread-local variables after the threads terminate,
 //! as well as support for accumulating the thread-local values using a binary operation.
 
-use derive_more::{Display, Error};
 use std::{
     cell::{Ref, RefCell, RefMut},
     collections::HashMap,
     fmt::Debug,
     mem::replace,
     ops::DerefMut,
-    sync::{Arc, Mutex, MutexGuard, TryLockError},
+    sync::{Arc, Mutex, MutexGuard},
     thread::{self, LocalKey, ThreadId},
 };
 
@@ -18,25 +17,6 @@ struct InnerControl<U> {
     tmap: HashMap<ThreadId, usize>,
     /// Accumulated value.
     acc: U,
-}
-
-/// Similar to [std::sync::TryLockError]. Can happen if there is contention for a lock or if the lock is poisoned.
-#[derive(Display, Error, Debug)]
-pub enum ControlLockError {
-    /// The lock could not be acquired because another thread failed while holding the lock.
-    Poisoned,
-    /// The lock could not be acquired at this time because the operation would otherwise block.
-    /// In this case, the operation may be tried again.
-    WouldBlock,
-}
-
-impl<S> From<TryLockError<S>> for ControlLockError {
-    fn from(value: TryLockError<S>) -> Self {
-        match value {
-            TryLockError::Poisoned(_) => Self::Poisoned,
-            TryLockError::WouldBlock => Self::WouldBlock,
-        }
-    }
 }
 
 /// Controls the destruction of thread-local values registered with it.
@@ -166,37 +146,21 @@ impl<T, U> Control<T, U> {
         // the thread-local data is accumulated.
     }
 
-    /// The result should always be [Ok] when this method is called after `ensure_tls_dropped`.
-    /// However, calling this before all thread-locals have been dropped may result in lock
-    /// contention with a [TryLockError] result.
-    /// A lock contention will not happen if `ensure_tls_dropped` is called before calling this method.
-    fn inner(
-        &self,
-    ) -> Result<MutexGuard<InnerControl<U>>, TryLockError<MutexGuard<InnerControl<U>>>> {
-        match self.inner.try_lock() {
-            Ok(guard) => Ok(guard),
-            err => err,
-        }
+    fn inner(&self) -> MutexGuard<InnerControl<U>> {
+        self.inner.lock().unwrap()
     }
 
     /// Provides access to the accumulated value in the [Control] struct.
     ///
-    /// The result should always be [Ok] when this method is called after
-    /// [`ensure_tls_dropped`](Self::ensure_tls_dropped) and all thread-locals have been deregistered.
-    pub fn with_acc<V>(&self, f: impl FnOnce(&U) -> V) -> Result<V, ControlLockError> {
-        let acc = &self.inner()?.acc;
-        Ok(f(acc))
+    pub fn with_acc<V>(&self, f: impl FnOnce(&U) -> V) -> V {
+        f(&self.inner().acc)
     }
 
     /// Returns the accumulated value in the [Control] struct, using a value of the same type to replace
     /// the existing accumulated value.
-    ///
-    /// The result should always be [Ok] when this method is called after
-    /// [`ensure_tls_dropped`](Self::ensure_tls_dropped) and all thread-locals have been deregistered.
-    pub fn take_acc(&self, replacement: U) -> Result<U, ControlLockError> {
-        let acc = &mut self.inner()?.acc;
-        let res = replace(acc, replacement);
-        Ok(res)
+    pub fn take_acc(&self, replacement: U) -> U {
+        let acc = &mut self.inner().acc;
+        replace(acc, replacement)
     }
 
     /// Provides immutable access to the data in the `Holder` in argument `tl`;
@@ -463,7 +427,7 @@ mod tests {
             let map2 = HashMap::from([(1, Foo("aa".to_owned())), (2, Foo("bb".to_owned()))]);
             let map = HashMap::from([(main_tid.clone(), map1), (spawned_tid.clone(), map2)]);
 
-            let acc = &control.inner().unwrap().acc;
+            let acc = &control.inner().acc;
 
             assert_eq!(acc, &map, "Accumulator check");
         }

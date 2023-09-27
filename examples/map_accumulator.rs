@@ -78,7 +78,5 @@ fn main() {
 
     println!("After call to `ensure_tls_dropped`: control={:?}", control);
 
-    control
-        .with_acc(|acc| println!("accumulated={:?}", acc))
-        .unwrap();
+    control.with_acc(|acc| println!("accumulated={:?}", acc));
 }

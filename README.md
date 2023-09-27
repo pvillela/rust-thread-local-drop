@@ -63,8 +63,7 @@ fn main() {
     control.ensure_tls_dropped();
 
     control
-        .with_acc(|acc| println!("accumulated={}", acc))
-        .unwrap();
+        .with_acc(|acc| println!("accumulated={}", acc));
 }
 ```
 
