@@ -20,10 +20,13 @@ struct InnerControl<U> {
     acc: U,
 }
 
-/// Similar to [TryLockError].
+/// Similar to [std::sync::TryLockError]. Can happen if there is contention for a lock or if the lock is poisoned.
 #[derive(Display, Error, Debug)]
 pub enum ControlLockError {
+    /// The lock could not be acquired because another thread failed while holding the lock.
     Poisoned,
+    /// The lock could not be acquired at this time because the operation would otherwise block.
+    /// In this case, the operation may be tried again.
     WouldBlock,
 }
 
@@ -163,8 +166,6 @@ impl<T, U> Control<T, U> {
         // the thread-local data is accumulated.
     }
 
-    /// Provides access to the value accumulated from thread-locals (see `new`).
-    /// See also `with_acc()`.
     /// The result should always be [Ok] when this method is called after `ensure_tls_dropped`.
     /// However, calling this before all thread-locals have been dropped may result in lock
     /// contention with a [TryLockError] result.
@@ -178,11 +179,10 @@ impl<T, U> Control<T, U> {
         }
     }
 
-    /// Provides access to the value accumulated from thread-locals (see `new`).
+    /// Provides access to the accumulated value in the [Control] struct.
     ///
-    /// The result should always be [Ok] when this method is called after `ensure_tls_dropped`.
-    /// However, calling this before all thread-locals have been deregistered may result in lock
-    /// contention with a [ControlLockError] result.
+    /// The result should always be [Ok] when this method is called after
+    /// [`ensure_tls_dropped`](Self::ensure_tls_dropped) and all thread-locals have been deregistered.
     pub fn with_acc<V>(&self, f: impl FnOnce(&U) -> V) -> Result<V, ControlLockError> {
         let acc = &self.inner()?.acc;
         Ok(f(acc))
@@ -191,9 +191,8 @@ impl<T, U> Control<T, U> {
     /// Returns the accumulated value in the [Control] struct, using a value of the same type to replace
     /// the existing accumulated value.
     ///
-    /// The result should always be [Ok] when this method is called after `ensure_tls_dropped`.
-    /// However, calling this before all thread-locals have been deregistered may result in lock
-    /// contention with a [ControlLockError] result.
+    /// The result should always be [Ok] when this method is called after
+    /// [`ensure_tls_dropped`](Self::ensure_tls_dropped) and all thread-locals have been deregistered.
     pub fn take_acc(&self, replacement: U) -> Result<U, ControlLockError> {
         let acc = &mut self.inner()?.acc;
         let res = replace(acc, replacement);
