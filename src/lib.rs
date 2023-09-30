@@ -10,7 +10,7 @@
 //!
 //! [`Control`] keeps track of the registered threads, and contains an accumulation operation `op` and an accumulated value `acc`. The accumulated value is updated by applying `op` to each thread-local data value and `acc` when the thread-local value is dropped.
 //!
-//! `Control` also provides methods to read and update the thread-local variable, a method [`ensure_tls_dropped`](Control::ensure_tls_dropped) (usually called from the main thread) to ensure all thread-local values have been deregistered/dropped, and methods  ([`with_acc`](Control::with_acc) and [`take_acc`](Control::take_acc)) to access the accumulated value.
+//! `Control` also provides methods to read and update the thread-local variable, a method [`ensure_tls_dropped`](Control::ensure_tls_dropped) (usually called from the main thread) to ensure all thread-local values have been dropped, and methods  ([`with_acc`](Control::with_acc) and [`take_acc`](Control::take_acc)) to access the accumulated value.
 //!
 //! ## Usage pattern
 //!
