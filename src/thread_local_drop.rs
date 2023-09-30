@@ -28,6 +28,7 @@ pub struct Control<T, U> {
     /// Keeps track of registered threads and accumulated value.
     inner: Arc<Mutex<InnerControl<U>>>,
     /// Binary operation that combines data from thread-locals with accumulated value.
+    #[allow(clippy::type_complexity)]
     op: Arc<dyn Fn(T, &mut U, &ThreadId) + Send + Sync>,
 }
 
