@@ -34,7 +34,7 @@ pub struct Control<T, U> {
 
 /// Encapsulates a [`MutexGuard`] for use by public methods that require [`Control`]'s lock to be acquired.
 ///
-/// An cquired lock can be used with multiple method calls and droped after the last call.
+/// An acquired lock can be used with multiple method calls and droped after the last call.
 /// As with any lock, the caller should ensure the lock is dropped as soon as it is no longer needed.
 pub struct ControlLock<'a, U: 'a>(MutexGuard<'a, InnerControl<U>>);
 
