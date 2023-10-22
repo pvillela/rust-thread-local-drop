@@ -30,20 +30,16 @@ fn update_tl(value: Data, control: &Control<Data, AccValue>) {
 fn main() {
     let control = Control::new(0, op);
 
-    update_tl(1, &control);
-
     thread::scope(|s| {
-        s.spawn(|| {
+        let h = s.spawn(|| {
             update_tl(10, &control);
         });
+        h.join().unwrap();
     });
 
     {
         // Acquire `control`'s lock.
-        let mut lock = control.lock();
-
-        // Call this after all other threads registered with `control` have been joined.
-        control.ensure_tls_dropped(&mut lock);
+        let lock = control.lock();
 
         control.with_acc(&lock, |acc| println!("accumulated={}", acc));
     }

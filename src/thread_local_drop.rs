@@ -3,21 +3,11 @@
 
 use std::{
     cell::{Ref, RefCell, RefMut},
-    collections::HashMap,
     fmt::Debug,
     mem::replace,
-    ops::DerefMut,
     sync::{Arc, Mutex, MutexGuard},
     thread::{self, LocalKey, ThreadId},
 };
-
-#[derive(Debug)]
-struct InnerControl<U> {
-    /// Thread control map.
-    tmap: HashMap<ThreadId, usize>,
-    /// Accumulated value.
-    acc: U,
-}
 
 /// Controls the destruction of thread-local values registered with it.
 /// Such values of type `T` must be held in thread-locals of type [`Holder<T>`].
@@ -26,7 +16,7 @@ struct InnerControl<U> {
 /// value upon dropping of each thread-local value. (See [`new`](Control::new) method.)
 pub struct Control<T, U> {
     /// Keeps track of registered threads and accumulated value.
-    inner: Arc<Mutex<InnerControl<U>>>,
+    acc: Arc<Mutex<U>>,
     /// Binary operation that combines data from thread-locals with accumulated value.
     #[allow(clippy::type_complexity)]
     op: Arc<dyn Fn(T, &mut U, &ThreadId) + Send + Sync>,
@@ -36,12 +26,12 @@ pub struct Control<T, U> {
 ///
 /// An acquired lock can be used with multiple method calls and droped after the last call.
 /// As with any lock, the caller should ensure the lock is dropped as soon as it is no longer needed.
-pub struct ControlLock<'a, U: 'a>(MutexGuard<'a, InnerControl<U>>);
+pub struct ControlLock<'a, U: 'a>(MutexGuard<'a, U>);
 
 impl<T, U> Clone for Control<T, U> {
     fn clone(&self) -> Self {
         Control {
-            inner: self.inner.clone(),
+            acc: self.acc.clone(),
             op: self.op.clone(),
         }
     }
@@ -49,7 +39,7 @@ impl<T, U> Clone for Control<T, U> {
 
 impl<T, U: Debug> Debug for Control<T, U> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&format!("Control({:?})", self.inner))
+        f.write_str(&format!("Control({:?})", self.acc))
     }
 }
 
@@ -62,16 +52,13 @@ impl<T, U> Control<T, U> {
     /// * `op` - Binary operation used to combine thread-local values with accumulated value.
     pub fn new(acc_base: U, op: impl Fn(T, &mut U, &ThreadId) + 'static + Send + Sync) -> Self {
         Control {
-            inner: Arc::new(Mutex::new(InnerControl {
-                tmap: HashMap::new(),
-                acc: acc_base,
-            })),
+            acc: Arc::new(Mutex::new(acc_base)),
             op: Arc::new(op),
         }
     }
 
     /// Registers a thread-local with `self` in case it is not already registered.
-    fn ensure_tl_registered(&self, tl: &'static LocalKey<Holder<T, U>>) {
+    fn ensure_tl_control(&self, tl: &'static LocalKey<Holder<T, U>>) {
         tl.with(|r| {
             // Case already registered.
             {
@@ -91,15 +78,6 @@ impl<T, U> Control<T, U> {
                 let mut control = r.control.borrow_mut();
                 *control = Some(self.clone());
             }
-
-            // Update self.
-            {
-                let data_ptr: *const Option<T> = &*r.data.borrow();
-                let addr = data_ptr as usize;
-                let mut control = self.inner.lock().unwrap();
-                control.tmap.insert(thread::current().id(), addr);
-                log::trace!("thread id {:?} registered", thread::current().id());
-            }
         });
     }
 
@@ -108,61 +86,8 @@ impl<T, U> Control<T, U> {
     /// An cquired lock can be used with multiple method calls and droped after the last call.
     /// As with any lock, the caller should ensure the lock is dropped as soon as it is no longer needed.
     pub fn lock(&self) -> ControlLock<'_, U> {
-        let lock = self.inner.lock().unwrap();
+        let lock = self.acc.lock().unwrap();
         ControlLock(lock)
-    }
-
-    /// Forces all registered thread-local values that have not already been dropped to be effectively dropped
-    /// by replacing the [`Holder`] data with [`None`], and accumulates the values contained in those thread-locals.
-    ///
-    /// Should only be called from a thread (typically the main thread) under the following conditions:
-    /// - All other threads that use this [`Control`] instance must have been directly or indirectly spawned
-    ///   from this thread; ***and***
-    /// - Any prior updates to holder values must have had a *happened before* relationship to this call;
-    ///   ***and***
-    /// - Any further updates to holder values must have a *happened after* relationship to this call.
-    ///   
-    /// In particular, the last two conditions are satisfied if the call to this method takes place after
-    /// this thread joins (directly or indirectly) with all threads that have registered with this [`Control`]
-    /// instance.
-    ///
-    /// These conditions ensure the absence of data races with a proper "happens-before" condition between any
-    /// thread-local data updates and this call.
-    ///
-    /// The [`lock`](Self::lock) method can be used to obtain the `lock` argument.
-    /// An cquired lock can be used with multiple method calls and droped after the last call.
-    /// As with any lock, the caller should ensure the lock is dropped as soon as it is no longer needed.
-    pub fn ensure_tls_dropped(&self, lock: &mut ControlLock<'_, U>) {
-        log::trace!("entered `ensure_tls_dropped`");
-        let inner = lock.0.deref_mut();
-        let acc = &mut inner.acc;
-        let map = &mut inner.tmap;
-        if map.is_empty() {
-            log::trace!("exited `ensure_tls_dropped` with no keys to drop");
-            return;
-        }
-        for (tid, addr) in map.iter() {
-            log::trace!("executing `ensure_tls_dropped` for key={:?}", tid);
-            // Safety: provided that:
-            // - All other threads have terminaged and been joined, which means that there is a proper
-            //   "happens-before" relationship and the only possible remaining activity on those threads
-            //   would be Holder drop method execution, but that method uses the above Mutex to prevent
-            //   race conditions.
-            let ptr = unsafe { &mut *(*addr as *mut Option<T>) };
-            log::trace!(
-                "got ptr with addr={} -- `ensure_tls_dropped` for key={:?}",
-                addr,
-                tid
-            );
-            let data = Option::take(ptr);
-            log::trace!("executed `take` -- `ensure_tls_dropped` for key={:?}", tid);
-            if let Some(data) = data {
-                log::trace!("executing `op` -- `ensure_tls_dropped` for key={:?}", tid);
-                (self.op)(data, acc, tid);
-            }
-        }
-        // tmap's keys are left alone to enable users of this framework to resume processing after
-        // the thread-local data is accumulated.
     }
 
     /// Provides access to the accumulated value in the [Control] struct.
@@ -171,7 +96,7 @@ impl<T, U> Control<T, U> {
     /// An cquired lock can be used with multiple method calls and droped after the last call.
     /// As with any lock, the caller should ensure the lock is dropped as soon as it is no longer needed.
     pub fn with_acc<V>(&self, lock: &ControlLock<'_, U>, f: impl FnOnce(&U) -> V) -> V {
-        f(&lock.0.acc)
+        f(&lock.0)
     }
 
     /// Returns the accumulated value in the [Control] struct, using a value of the same type to replace
@@ -181,13 +106,13 @@ impl<T, U> Control<T, U> {
     /// An cquired lock can be used with multiple method calls and droped after the last call.
     /// As with any lock, the caller should ensure the lock is dropped as soon as it is no longer needed.
     pub fn take_acc(&self, lock: &mut ControlLock<'_, U>, replacement: U) -> U {
-        let acc = &mut lock.0.acc;
+        let acc = &mut lock.0;
         replace(acc, replacement)
     }
 
     /// Provides immutable access to the data in the `Holder` in argument `tl`;
     pub fn with_tl<V>(&self, tl: &'static LocalKey<Holder<T, U>>, f: impl FnOnce(&T) -> V) -> V {
-        self.ensure_tl_registered(tl);
+        self.ensure_tl_control(tl);
         tl.with(|h| {
             let data = h.borrow_data();
             f(&data)
@@ -200,7 +125,7 @@ impl<T, U> Control<T, U> {
         tl: &'static LocalKey<Holder<T, U>>,
         f: impl FnOnce(&mut T) -> V,
     ) -> V {
-        self.ensure_tl_registered(tl);
+        self.ensure_tl_control(tl);
         tl.with(|h| {
             let mut data = h.borrow_data_mut();
             f(&mut data)
@@ -282,7 +207,7 @@ impl<T, U> Drop for Holder<T, U> {
         let control = control.as_ref().unwrap();
 
         log::trace!("`drop` acquiring control lock on thread {:?}", tid);
-        let mut inner = control.inner.lock().unwrap();
+        let mut acc = control.acc.lock().unwrap();
         log::trace!("`drop` acquired control lock on thread {:?}", tid);
 
         if self.data.borrow().is_none() {
@@ -292,18 +217,10 @@ impl<T, U> Drop for Holder<T, U> {
             );
             return;
         }
-        let map = &mut inner.tmap;
-        let entry = map.remove_entry(&tid);
-        log::trace!(
-            "`drop` removed entry {:?} for thread {:?}, control={:?}",
-            entry,
-            thread::current().id(),
-            map
-        );
         let op = &control.op;
         let data = self.data.take();
         if let Some(data) = data {
-            op(data, &mut inner.acc, &tid);
+            op(data, &mut acc, &tid);
         }
         log::trace!("`drop` exited on thread {:?}", tid);
     }
@@ -360,97 +277,67 @@ mod tests {
         });
     }
 
-    fn typed_value<T>(addr: usize) -> &'static Option<T> {
-        unsafe { &*(addr as *const Option<T>) }
-    }
-
-    fn assert_control_map(control: &Control<Data, AccumulatorMap>, keys: &[ThreadId], msg: &str) {
-        let inner = control.inner.lock().unwrap();
-        let map = &inner.tmap;
-        for (k, v) in map {
-            let value = typed_value::<Data>(*v);
-            assert!(
-                keys.contains(k) || value.is_none(),
-                "{msg} - map contains spurious key {:?} with value {:?}",
-                k,
-                value
-            );
-        }
-        for k in keys {
-            let v = map.get(k);
-            let res = match v {
-                None => false,
-                Some(&addr) => typed_value::<Data>(addr).is_some(),
-            };
-            assert!(res, "{msg} - map is missing key {:?}", k);
-        }
-    }
-
     #[test]
     fn test_all() {
         let control = Control::new(HashMap::new(), op);
-
-        let main_tid = thread::current().id();
-        println!("main_tid={:?}", main_tid);
-        let spawned_tid = RwLock::new(thread::current().id());
-
-        {
-            insert_tl_entry(1, Foo("a".to_owned()), &control);
-            insert_tl_entry(2, Foo("b".to_owned()), &control);
-            println!("after main thread inserts: {:?}", control);
-
-            let other = HashMap::from([(1, Foo("a".to_owned())), (2, Foo("b".to_owned()))]);
-            assert_tl(&other, "After main thread inserts");
-        }
-
-        thread::sleep(Duration::from_millis(100));
+        let spawned_tids = RwLock::new(vec![thread::current().id(), thread::current().id()]);
 
         thread::scope(|s| {
-            let h = s.spawn(|| {
-                let mut lock = spawned_tid.try_write().unwrap();
-                *lock = thread::current().id();
-                drop(lock);
+            let hs = (0..2)
+                .map(|i| {
+                    s.spawn({
+                        // These are to prevent the move closure from moving `control` and `spawned_tids`.
+                        // The closure has to be `move` because it needs to own `i`.
+                        let control = &control;
+                        let spawned_tids = &spawned_tids;
 
-                insert_tl_entry(1, Foo("aa".to_owned()), &control);
+                        move || {
+                            let si = i.to_string();
 
-                let other = HashMap::from([(1, Foo("aa".to_owned()))]);
-                assert_tl(&other, "Before spawned thread sleep");
+                            let mut lock = spawned_tids.try_write().unwrap();
+                            lock[i] = thread::current().id();
+                            drop(lock);
 
-                thread::sleep(Duration::from_millis(200));
+                            insert_tl_entry(1, Foo("a".to_owned() + &si), control);
 
-                insert_tl_entry(2, Foo("bb".to_owned()), &control);
+                            let other = HashMap::from([(1, Foo("a".to_owned() + &si))]);
+                            assert_tl(&other, "After 1st insert");
 
-                let other = HashMap::from([(1, Foo("aa".to_owned())), (2, Foo("bb".to_owned()))]);
-                assert_tl(&other, "After spawned thread sleep");
-            });
+                            insert_tl_entry(2, Foo("b".to_owned() + &si), control);
+
+                            let other = HashMap::from([
+                                (1, Foo("a".to_owned() + &si)),
+                                (2, Foo("b".to_owned() + &si)),
+                            ]);
+                            assert_tl(&other, "After 2nd insert");
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
 
             thread::sleep(Duration::from_millis(50));
 
-            let spawned_tid = spawned_tid.try_read().unwrap();
-            println!("spawned_tid={:?}", spawned_tid);
+            let spawned_tids = spawned_tids.try_read().unwrap();
+            println!("spawned_tid={:?}", spawned_tids);
 
-            let keys = [main_tid.clone(), spawned_tid.clone()];
-            assert_control_map(&control, &keys, "Before joining spawned thread");
-
-            h.join().unwrap();
+            hs.into_iter().for_each(|h| h.join().unwrap());
 
             println!("after h.join(): {:?}", control);
-
-            control.ensure_tls_dropped(&mut control.lock());
-            let keys = [];
-            assert_control_map(&control, &keys, "After call to `ensure_tls_dropped`");
         });
 
         {
-            let spawned_tid = spawned_tid.try_read().unwrap();
-            let map1 = HashMap::from([(1, Foo("a".to_owned())), (2, Foo("b".to_owned()))]);
-            let map2 = HashMap::from([(1, Foo("aa".to_owned())), (2, Foo("bb".to_owned()))]);
-            let map = HashMap::from([(main_tid.clone(), map1), (spawned_tid.clone(), map2)]);
+            let spawned_tids = spawned_tids.try_read().unwrap();
+            let map_0 = HashMap::from([(1, Foo("a0".to_owned())), (2, Foo("b0".to_owned()))]);
+            let map_1 = HashMap::from([(1, Foo("a1".to_owned())), (2, Foo("b1".to_owned()))]);
+            let map = HashMap::from([
+                (spawned_tids[0].clone(), map_0),
+                (spawned_tids[1].clone(), map_1),
+            ]);
 
             {
                 let lock = control.lock();
-                let acc = &lock.0.acc;
-                assert_eq!(acc, &map, "Accumulator check");
+                let acc = &lock.0;
+                assert!(acc.eq(&map), "Accumulator check: acc={acc:?}, map={map:?}");
             }
         }
     }

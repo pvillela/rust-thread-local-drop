@@ -6,7 +6,6 @@ use std::{
     env::set_var,
     fmt::Debug,
     thread::{self, ThreadId},
-    time::Duration,
 };
 use thread_local_drop::{Control, Holder};
 
@@ -58,28 +57,20 @@ fn main() {
 
     let control = Control::new(HashMap::new(), op);
 
-    insert_tl_entry(1, Foo("a".to_owned()), &control);
-    insert_tl_entry(2, Foo("b".to_owned()), &control);
-    print_tl("Main thread after inserts");
-
     thread::scope(|s| {
-        s.spawn(|| {
+        let h = s.spawn(|| {
             insert_tl_entry(1, Foo("aa".to_owned()), &control);
-            print_tl("Spawned thread before sleep");
-            thread::sleep(Duration::from_millis(200));
+            print_tl("Spawned thread after 1st insert");
             insert_tl_entry(2, Foo("bb".to_owned()), &control);
-            print_tl("Spawned thread after sleep and additional insert");
+            print_tl("Spawned thread after 2nd insert");
         });
+        h.join().unwrap();
     });
 
     println!("After spawned thread join: control={:?}", control);
 
     {
-        let mut lock = control.lock();
-        control.ensure_tls_dropped(&mut lock);
-
-        println!("After call to `ensure_tls_dropped`: control={:?}", control);
-
+        let lock = control.lock();
         control.with_acc(&lock, |acc| println!("accumulated={:?}", acc));
     }
 }
