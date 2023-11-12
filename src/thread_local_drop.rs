@@ -9,7 +9,7 @@ use std::{
     thread::{self, LocalKey, ThreadId},
 };
 
-/// Controls the destruction of thread-local values registered with it.
+/// Keeps track of the destruction of thread-local values registered with it.
 /// Such values of type `T` must be held in thread-locals of type [`Holder<T>`].
 /// `U` is the type of the accumulated value resulting from an initial base value and
 /// the application of an operation to each thread-local value and the current accumulated
@@ -92,6 +92,9 @@ impl<T, U> Control<T, U> {
 
     /// Provides access to the accumulated value in the [Control] struct.
     ///
+    /// The accumulated value reflects the thread-local values of all thrads that have been joined
+    /// directly or indirectly prior to this method call.
+    ///
     /// The [`lock`](Self::lock) method can be used to obtain the `lock` argument.
     /// An cquired lock can be used with multiple method calls and droped after the last call.
     /// As with any lock, the caller should ensure the lock is dropped as soon as it is no longer needed.
@@ -101,6 +104,9 @@ impl<T, U> Control<T, U> {
 
     /// Returns the accumulated value in the [Control] struct, using a value of the same type to replace
     /// the existing accumulated value.
+    ///
+    /// The accumulated value reflects the thread-local values of all thrads that have been joined
+    /// directly or indirectly prior to this method call.
     ///
     /// The [`lock`](Self::lock) method can be used to obtain the `lock` argument.
     /// An cquired lock can be used with multiple method calls and droped after the last call.
@@ -322,7 +328,7 @@ mod tests {
 
             hs.into_iter().for_each(|h| h.join().unwrap());
 
-            println!("after h.join(): {:?}", control);
+            println!("after hs join: {:?}", control);
         });
 
         {
