@@ -67,4 +67,5 @@
 //!
 //! See another example at [`examples/map_accumulator.rs`](https://github.com/pvillela/rust-thread-local-drop/blob/main/examples/map_accumulator.rs).
 
+pub mod forced;
 pub mod joined;
