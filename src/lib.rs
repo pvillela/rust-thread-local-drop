@@ -17,10 +17,8 @@
 //! Here's an outline of how this little framework can be used:
 //!
 //! ```rust
-//! //! Simple example usage of [`thread_local_drop`].
-//!
 //! use std::thread::{self, ThreadId};
-//! use thread_local_drop::{Control, Holder};
+//! use thread_local_drop::joined::{Control, Holder};
 //!
 //! // Define your data type, e.g.:
 //! type Data = i32;
@@ -69,5 +67,4 @@
 //!
 //! See another example at [`examples/map_accumulator.rs`](https://github.com/pvillela/rust-thread-local-drop/blob/main/examples/map_accumulator.rs).
 
-mod thread_local_drop;
-pub use thread_local_drop::*;
+pub mod joined;

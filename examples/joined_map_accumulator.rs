@@ -7,7 +7,7 @@ use std::{
     fmt::Debug,
     thread::{self, ThreadId},
 };
-use thread_local_drop::{Control, Holder};
+use thread_local_drop::joined::{Control, Holder};
 
 #[derive(Debug, Clone)]
 struct Foo(String);
