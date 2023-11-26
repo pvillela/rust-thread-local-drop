@@ -285,13 +285,6 @@ impl<T, U> Drop for Holder<T, U> {
         let mut inner = control.inner.lock().unwrap();
         log::trace!("`drop` acquired control lock on thread {:?}", tid);
 
-        if self.data.borrow().is_none() {
-            log::trace!(
-                "exiting `drop` for Holder on thread {:?} because data is None",
-                tid
-            );
-            return;
-        }
         let map = &mut inner.tmap;
         let entry = map.remove_entry(&tid);
         log::trace!(
