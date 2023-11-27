@@ -177,22 +177,42 @@ pub trait Holder<T: 'static> {
     }
 }
 
+pub trait GuardedData<T: 'static> {
+    type Guard<'a>: DerefMut<Target = Option<T>> + 'a
+    where
+        Self: 'a;
+
+    fn guard<'a>(&'a self) -> Self::Guard<'a>;
+}
+
+impl<T: 'static> GuardedData<T> for Arc<Mutex<Option<T>>> {
+    type Guard<'a> = MutexGuard<'a, Option<T>>;
+
+    fn guard<'a>(&'a self) -> Self::Guard<'a> {
+        self.lock().unwrap()
+    }
+}
+
 /// Holds thead-local data to enable registering it with [`Control`].
-pub struct HolderS<T: 'static, Ctrl: 'static>
+pub struct HolderS<T, Ctrl, GData>
 where
-    Ctrl: Control<T>,
+    T: 'static,
+    Ctrl: Control<T> + 'static,
+    GData: GuardedData<T> + 'static,
 {
-    data: Arc<Mutex<Option<T>>>,
+    data: GData,
     control: RefCell<Option<Ctrl>>,
     data_init: fn() -> T,
 }
 
-impl<T: 'static, Ctrl> Holder<T> for HolderS<T, Ctrl>
+impl<T, Ctrl, GData> Holder<T> for HolderS<T, Ctrl, GData>
 where
+    T: 'static,
     Ctrl: Control<T> + 'static,
+    GData: GuardedData<T> + 'static,
 {
     type Ctrl = Ctrl;
-    type Guard<'a> = MutexGuard<'a, Option<T>>;
+    type Guard<'a> = GData::Guard<'a>;
 
     // fn data_guard(&self) -> Self::Guard {
     //     self.data.lock().unwrap().into()
@@ -207,11 +227,11 @@ where
     }
 
     fn data_guard<'a>(&'a self) -> Self::Guard<'a> {
-        self.data.lock().unwrap()
+        self.data.guard()
     }
 }
 
-impl<T, Ctrl> HolderS<T, Ctrl>
+impl<T, Ctrl> HolderS<T, Ctrl, Arc<Mutex<Option<T>>>>
 where
     Ctrl: Control<T>,
 {
@@ -227,18 +247,22 @@ where
     }
 }
 
-impl<T: Debug, Ctrl> Debug for HolderS<T, Ctrl>
+impl<'a, T, Ctrl, GData> Debug for HolderS<T, Ctrl, GData>
 where
+    T: Debug,
     Ctrl: Control<T>,
+    GData: GuardedData<T> + Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&format!("Holder{{data: {:?}}}", self.data))
+        f.write_str(&format!("Holder{{data: {:?}}}", &self.data))
     }
 }
 
-impl<T: 'static, Ctrl: 'static> Drop for HolderS<T, Ctrl>
+impl<T, Ctrl, GData> Drop for HolderS<T, Ctrl, GData>
 where
-    Ctrl: Control<T>,
+    T: 'static,
+    Ctrl: Control<T> + 'static,
+    GData: GuardedData<T> + 'static,
 {
     /// Ensures the held data, if any, is deregistered from the associated [`Control`] instance
     /// and the control instance's accumulation operation is invoked with the held data.
