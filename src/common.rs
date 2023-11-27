@@ -1,10 +1,8 @@
 use std::{
-    cell::RefCell,
-    collections::HashMap,
+    cell::{Ref, RefCell},
     fmt::Debug,
-    marker::PhantomData,
     mem::replace,
-    ops::DerefMut,
+    ops::{Deref, DerefMut},
     sync::{Arc, Mutex, MutexGuard},
     thread::{self, LocalKey, ThreadId},
 };
@@ -13,8 +11,8 @@ pub trait ControlLock<'a, U> {
     fn acc(&mut self) -> &'a mut U;
 }
 
-pub trait Control<T>: Sized {
-    type U;
+pub trait Control<T: 'static>: Sized {
+    type U: 'static;
     type Lock<'a>: ControlLock<'a, Self::U>;
     type Hldr: Holder<T, Ctrl = Self>;
 
@@ -77,7 +75,7 @@ pub trait Control<T>: Sized {
         self.ensure_tl_registered(tl);
         tl.with(|h| {
             let guard = h.borrow_data();
-            let data = guard.data().as_ref().unwrap();
+            let data = guard.deref().as_ref().unwrap();
             f(data)
         })
     }
@@ -86,8 +84,8 @@ pub trait Control<T>: Sized {
     fn with_tl_mut<V>(&self, tl: &'static LocalKey<Self::Hldr>, f: impl FnOnce(&mut T) -> V) -> V {
         self.ensure_tl_registered(tl);
         tl.with(|h| {
-            let mut guard = h.borrow_data_mut();
-            let data = guard.data().as_mut().unwrap();
+            let mut guard = h.borrow_data();
+            let data = guard.deref_mut().as_mut().unwrap();
             f(data)
         })
     }
@@ -134,57 +132,53 @@ impl<T: Debug, U: Debug, Inner: Debug> Debug for ControlS<T, U, Inner> {
     }
 }
 
-pub trait HolderGuard<'a, T> {
-    fn data(&mut self) -> &'a mut Option<T>;
-}
+// pub trait HolderGuard<T> {
+//     fn data<'a>(&'a mut self) -> &'a mut Option<T>;
+// }
 
-impl<'a, T> HolderGuard<'a, T> for MutexGuard<'a, Option<T>> {
-    fn data(&mut self) -> &'a mut Option<T> {
-        let x = self.deref_mut();
-        x
-    }
-}
+// impl<T> HolderGuard<T> for Mutex<Option<T>> {
+//     fn data<'a>(&'a mut self) -> &'a mut Option<T> {
+//         self.lock().unwrap().deref_mut()
+//     }
+// }
 
-pub trait Holder<T> {
+pub trait Holder<T: 'static> {
     type Ctrl: Control<T>;
-    type Guard<'a>: HolderGuard<'a, T>
+    type Guard<'a>: DerefMut<Target = Option<T>> + 'a
     where
         Self: 'a;
 
-    fn control(&self) -> &Self::Ctrl;
-    fn data_guard(&self) -> Self::Guard<'_>;
+    fn control(&self) -> Ref<'_, Self::Ctrl>;
+    // fn data_guard<'a>(&'a self) -> Self::Guard;
+
+    fn data_guard<'a>(&'a self) -> Self::Guard<'a>;
+
     fn data_init(&self) -> T;
 
-    fn drop_data(&self) -> Option<T> {
-        let data = self.data_guard().data();
-        data.take()
+    fn drop_data(&self) {
+        let mut data_guard = self.data_guard();
+        // let data = data_guard.deref_mut();
+        let data = data_guard.take();
+        let control = self.control();
+        control.tl_data_dropped(&thread::current().id(), data);
     }
 
-    fn borrow_data(&self) -> Self::Guard<'_> {
-        let guard = self.data_guard();
-        let data = guard.data();
+    fn borrow_data<'a>(&'a self) -> Self::Guard<'a> {
+        let mut guard = self.data_guard();
+        let data = guard.deref_mut();
         if data.is_none() {
             *data = Some(self.data_init());
         }
         guard
     }
 
-    fn borrow_data_mut(&self) -> Self::Guard<'_> {
+    fn borrow_data_mut<'a>(&'a self) -> Self::Guard<'a> {
         self.borrow_data()
     }
 }
 
-pub fn dropper<T, H>(h: &mut H)
-where
-    H: Holder<T>,
-{
-    let control = h.control();
-    let data = h.drop_data();
-    control.tl_data_dropped(&thread::current().id(), data);
-}
-
 /// Holds thead-local data to enable registering it with [`Control`].
-pub struct HolderS<T, Ctrl>
+pub struct HolderS<T: 'static, Ctrl: 'static>
 where
     Ctrl: Control<T>,
 {
@@ -200,16 +194,20 @@ where
     type Ctrl = Ctrl;
     type Guard<'a> = MutexGuard<'a, Option<T>>;
 
-    fn data_guard(&self) -> Self::Guard<'_> {
-        self.data.lock().unwrap().into()
-    }
+    // fn data_guard(&self) -> Self::Guard {
+    //     self.data.lock().unwrap().into()
+    // }
 
-    fn control(&self) -> &Self::Ctrl {
-        self.control.borrow().as_ref().unwrap()
+    fn control(&self) -> Ref<'_, Self::Ctrl> {
+        Ref::map(self.control.borrow(), |x| x.as_ref().unwrap())
     }
 
     fn data_init(&self) -> T {
         (self.data_init)()
+    }
+
+    fn data_guard<'a>(&'a self) -> Self::Guard<'a> {
+        self.data.lock().unwrap()
     }
 }
 
@@ -227,23 +225,6 @@ where
             data_init,
         }
     }
-
-    /// Immutably borrows the held data.
-    /// If the data is not yet initialized, the function `data_init` passed to `new` is called to initialize the data.
-    fn borrow_data(&self) -> MutexGuard<'_, Option<T>> {
-        let mut data = self.data.lock().unwrap();
-        if data.is_none() {
-            // let data = self.data.lock().unwrap();
-            *data = Some((self.data_init)());
-        }
-        data
-    }
-
-    /// Mutably borrows the held data.
-    /// If the data is not yet initialized, the function `data_init` passed to `new` is called to initialize the data.
-    fn borrow_data_mut(&self) -> MutexGuard<'_, Option<T>> {
-        self.borrow_data()
-    }
 }
 
 impl<T: Debug, Ctrl> Debug for HolderS<T, Ctrl>
@@ -255,52 +236,14 @@ where
     }
 }
 
-impl<T, Ctrl> Drop for HolderS<T, Ctrl>
+impl<T: 'static, Ctrl: 'static> Drop for HolderS<T, Ctrl>
 where
     Ctrl: Control<T>,
 {
     /// Ensures the held data, if any, is deregistered from the associated [`Control`] instance
     /// and the control instance's accumulation operation is invoked with the held data.
     fn drop(&mut self) {
-        let tid = thread::current().id();
-        log::trace!("entered `drop` for Holder on thread {:?}", tid);
-        let control = self.control.borrow();
-        if control.is_none() {
-            log::trace!(
-                "exiting `drop` for Holder on thread {:?} because control is None",
-                tid
-            );
-            return;
-        }
-        let control = control.as_ref().unwrap();
-
-        log::trace!("`drop` acquiring control lock on thread {:?}", tid);
-        let mut inner = control.inner.lock().unwrap();
-        log::trace!("`drop` acquired control lock on thread {:?}", tid);
-
-        let mut data = self.data.lock().unwrap();
-        if data.is_none() {
-            log::trace!(
-                "exiting `drop` for Holder on thread {:?} because data is None",
-                tid
-            );
-            return;
-        }
-
-        let map = &mut inner.tmap;
-        let _entry = map.remove_entry(&tid);
-        log::trace!(
-            "`drop` removed entry <:?> for thread {:?}, control=<:?>",
-            // entry,
-            thread::current().id(),
-            // map
-        );
-        let op = &control.op;
-        let data = data.take();
-        if let Some(data) = data {
-            op(data, &mut inner.acc, &tid);
-        }
-        log::trace!("`drop` exited on thread {:?}", tid);
+        self.drop_data()
     }
 }
 
